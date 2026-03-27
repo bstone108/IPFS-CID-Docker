@@ -6,11 +6,14 @@ services:
         KUBO_IMAGE_TAG: latest
     image: ghcr.io/bstone108/ipfs-cid-docker:latest
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
     environment:
       CONFIG_PATH: /config
       RESCAN_INTERVAL: 15m
       SCAN_PRIORITY: low
       SCAN_PATHS: /mnt
+      UPLOAD_BANDWIDTH_LIMIT: 10mbit
     ports:
       - "4001:4001"
       - "4001:4001/udp"

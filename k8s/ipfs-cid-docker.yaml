@@ -45,6 +45,12 @@ spec:
               value: low
             - name: SCAN_PATHS
               value: /mnt
+            - name: UPLOAD_BANDWIDTH_LIMIT
+              value: 10mbit
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
           ports:
             - name: swarm-tcp
               containerPort: 4001

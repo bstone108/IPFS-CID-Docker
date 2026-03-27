@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -39,6 +40,55 @@ INTERVAL_UNITS = {
     "d": 86400,
     "day": 86400,
     "days": 86400,
+}
+
+BANDWIDTH_DISABLED_VALUES = {
+    "0",
+    "0bit",
+    "0bps",
+    "disable",
+    "disabled",
+    "false",
+    "none",
+    "off",
+    "unlimited",
+}
+
+BANDWIDTH_UNIT_MULTIPLIERS = {
+    "b/s": 1,
+    "bit": 1,
+    "bit/s": 1,
+    "bits": 1,
+    "bits/s": 1,
+    "bps": 1,
+    "kbit": 1_000,
+    "kbit/s": 1_000,
+    "kbits": 1_000,
+    "kb/s": 1_000,
+    "kbps": 1_000,
+    "mbit": 1_000_000,
+    "mbit/s": 1_000_000,
+    "mbits": 1_000_000,
+    "mb/s": 1_000_000,
+    "mbps": 1_000_000,
+    "gbit": 1_000_000_000,
+    "gbit/s": 1_000_000_000,
+    "gbits": 1_000_000_000,
+    "gb/s": 1_000_000_000,
+    "gbps": 1_000_000_000,
+    "tbit": 1_000_000_000_000,
+    "tbit/s": 1_000_000_000_000,
+    "tb/s": 1_000_000_000_000,
+    "tbps": 1_000_000_000_000,
+    "B/s": 8,
+    "KB/s": 8_000,
+    "MB/s": 8_000_000,
+    "GB/s": 8_000_000_000,
+    "TB/s": 8_000_000_000_000,
+    "KiB/s": 8 * 1024,
+    "MiB/s": 8 * 1024 * 1024,
+    "GiB/s": 8 * 1024 * 1024 * 1024,
+    "TiB/s": 8 * 1024 * 1024 * 1024 * 1024,
 }
 
 
@@ -77,6 +127,14 @@ PRIORITY_PROFILES = {
 
 
 @dataclass(frozen=True)
+class BandwidthLimit:
+    raw: str
+    bits_per_second: int
+    tc_rate: str
+    tc_burst_bytes: int
+
+
+@dataclass(frozen=True)
 class Config:
     config_path: Path
     mount_root: Path
@@ -89,6 +147,8 @@ class Config:
     export_path: Path
     ipfs_path: Path
     ipfs_profiles: tuple[str, ...]
+    upload_bandwidth_limit: BandwidthLimit | None
+    bandwidth_interface: str | None
 
 
 @dataclass
@@ -334,6 +394,38 @@ def parse_profiles(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
+def parse_bandwidth_limit(value: str) -> BandwidthLimit | None:
+    text = value.strip()
+    if not text or text.lower() in BANDWIDTH_DISABLED_VALUES:
+        return None
+
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([A-Za-z]+(?:/[A-Za-z]+)?)", text)
+    if not match:
+        raise ValueError(
+            "UPLOAD_BANDWIDTH_LIMIT must look like 10mbit, 100Mbps, or 5MiB/s"
+        )
+
+    number = float(match.group(1))
+    unit = match.group(2)
+    multiplier = BANDWIDTH_UNIT_MULTIPLIERS.get(unit)
+    if multiplier is None:
+        multiplier = BANDWIDTH_UNIT_MULTIPLIERS.get(unit.lower())
+    if multiplier is None:
+        raise ValueError(f"unsupported upload bandwidth unit {unit!r}")
+
+    bits_per_second = int(number * multiplier)
+    if bits_per_second <= 0:
+        raise ValueError("UPLOAD_BANDWIDTH_LIMIT must be greater than zero")
+
+    burst_bytes = max(1_600, math.ceil((bits_per_second / 8) / 10))
+    return BandwidthLimit(
+        raw=text,
+        bits_per_second=bits_per_second,
+        tc_rate=f"{bits_per_second}bit",
+        tc_burst_bytes=burst_bytes,
+    )
+
+
 def load_config() -> Config:
     config_path = Path(os.getenv("CONFIG_PATH", "/config"))
     mount_root = Path("/mnt")
@@ -346,6 +438,10 @@ def load_config() -> Config:
     )
     ipfs_path = Path(os.getenv("IPFS_PATH", str(config_path / "ipfs")))
     ipfs_profiles = parse_profiles(os.getenv("IPFS_PROFILE", "server"))
+    upload_bandwidth_limit = parse_bandwidth_limit(
+        os.getenv("UPLOAD_BANDWIDTH_LIMIT", "")
+    )
+    bandwidth_interface = os.getenv("BANDWIDTH_INTERFACE", "").strip() or None
 
     if priority not in PRIORITY_PROFILES:
         raise ValueError(
@@ -364,6 +460,8 @@ def load_config() -> Config:
         export_path=export_path,
         ipfs_path=ipfs_path,
         ipfs_profiles=ipfs_profiles,
+        upload_bandwidth_limit=upload_bandwidth_limit,
+        bandwidth_interface=bandwidth_interface,
     )
 
 
@@ -806,6 +904,84 @@ def wait_for_ipfs(timeout_seconds: float = 60.0) -> None:
     raise TimeoutError("Timed out waiting for IPFS daemon")
 
 
+def detect_egress_interface() -> str:
+    route_commands = [
+        ["ip", "route", "show", "default"],
+        ["ip", "-6", "route", "show", "default"],
+    ]
+    for command in route_commands:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        match = re.search(r"\bdev\s+(\S+)", result.stdout)
+        if match and match.group(1) != "lo":
+            return match.group(1)
+
+    result = subprocess.run(
+        ["ip", "-o", "link", "show", "up"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    for line in result.stdout.splitlines():
+        match = re.match(r"\d+:\s+([^:@]+)", line)
+        if match and match.group(1) != "lo":
+            return match.group(1)
+
+    raise RuntimeError("Could not determine the container egress network interface")
+
+
+def apply_upload_bandwidth_limit(config: Config) -> None:
+    limit = config.upload_bandwidth_limit
+    if limit is None:
+        return
+
+    interface = config.bandwidth_interface or detect_egress_interface()
+    command = [
+        "tc",
+        "qdisc",
+        "replace",
+        "dev",
+        interface,
+        "root",
+        "tbf",
+        "rate",
+        limit.tc_rate,
+        "burst",
+        f"{limit.tc_burst_bytes}b",
+        "latency",
+        "100ms",
+    ]
+    LOGGER.info(
+        "Applying upload bandwidth limit %s on interface %s",
+        limit.raw,
+        interface,
+    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "tc is not installed in the container image, so upload bandwidth limiting "
+            "cannot be enabled"
+        ) from exc
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(
+            "Failed to apply upload bandwidth limit. "
+            "If you enabled UPLOAD_BANDWIDTH_LIMIT, also grant NET_ADMIN. "
+            f"tc said: {stderr}"
+        )
+
+
 def stop_process_group(process: subprocess.Popen[str] | None) -> None:
     if process is None or process.poll() is not None:
         return
@@ -826,15 +1002,17 @@ def main() -> int:
     os.environ["IPFS_PATH"] = str(config.ipfs_path)
 
     LOGGER.info(
-        "Starting autoscan service with roots=%s interval=%s priority=%s",
+        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s",
         config.scan_paths_raw,
         config.rescan_interval_text,
         config.scan_priority,
+        config.upload_bandwidth_limit.raw if config.upload_bandwidth_limit else "off",
     )
 
     ensure_parent_dir(config.db_path)
     ensure_parent_dir(config.export_path)
     ensure_ipfs_repo(config)
+    apply_upload_bandwidth_limit(config)
 
     scanner = Scanner(config)
     daemon: subprocess.Popen[str] | None = None

@@ -32,6 +32,8 @@ This version is intentionally file-CID focused. It does not maintain an extra mi
 | `INDEX_EXPORT_PATH` | `/config/index/current-index.json` | JSON manifest path. |
 | `IPFS_PATH` | `/config/ipfs` | IPFS repo path. Persist this volume if you want your node and pins to survive restarts. |
 | `IPFS_PROFILE` | `server` | Comma-separated Kubo config profiles applied only when the repo is first initialized. |
+| `UPLOAD_BANDWIDTH_LIMIT` | disabled | Optional container-wide outbound bandwidth cap such as `10mbit`, `100Mbps`, or `5MiB/s`. This throttles uploads and any other egress traffic from the container. |
+| `BANDWIDTH_INTERFACE` | auto-detect | Optional override for the Linux network interface that `tc` should shape if auto-detection does not pick the right one. |
 
 ## Quick Start
 
@@ -39,6 +41,7 @@ This version is intentionally file-CID focused. It does not maintain an extra mi
 docker run -d \
   --name ipfs-autoscan \
   --restart unless-stopped \
+  --cap-add NET_ADMIN \
   -p 4001:4001 \
   -p 4001:4001/udp \
   -p 5001:5001 \
@@ -46,20 +49,25 @@ docker run -d \
   -e CONFIG_PATH="/config" \
   -e RESCAN_INTERVAL="15m" \
   -e SCAN_PRIORITY="low" \
+  -e UPLOAD_BANDWIDTH_LIMIT="10mbit" \
   -v /srv/ipfs-autoscan:/config \
   -v /stuff/stupidity/whatever:/mnt/whatever:ro \
   ghcr.io/bstone108/ipfs-cid-docker:latest
 ```
+
+If you do not want an upload cap, leave `UPLOAD_BANDWIDTH_LIMIT` unset or set it to `off`, and you can also drop `NET_ADMIN`.
 
 To scan more than one host directory, mount each one under a unique path beneath `/mnt`:
 
 ```bash
 docker run -d \
   --name ipfs-autoscan \
+  --cap-add NET_ADMIN \
   -p 4001:4001 \
   -p 4001:4001/udp \
   -p 5001:5001 \
   -p 8080:8080 \
+  -e UPLOAD_BANDWIDTH_LIMIT="10mbit" \
   -v /srv/ipfs-autoscan:/config \
   -v /stuff/stupidity/whatever:/mnt/whatever:ro \
   -v /other/media:/mnt/media:ro \
@@ -104,11 +112,11 @@ http://<host>:8080/ipfs/<file_cid>
 
 ## Compose
 
-A sample [`compose.yaml`](/Users/brandonstone/Documents/Source%20Code/IPFS%20Docker/compose.yaml) is included. Update the bind mounts and image name before using it.
+A sample [`compose.yaml`](compose.yaml) is included. It already includes `UPLOAD_BANDWIDTH_LIMIT` and `NET_ADMIN`; update the bind mounts and sample limit before using it.
 
 ## Kubernetes
 
-A sample Kubernetes manifest is included at [`k8s/ipfs-cid-docker.yaml`](/Users/brandonstone/Documents/Source%20Code/IPFS%20Docker/k8s/ipfs-cid-docker.yaml).
+A sample Kubernetes manifest is included at [`k8s/ipfs-cid-docker.yaml`](k8s/ipfs-cid-docker.yaml).
 
 Apply it with:
 
@@ -124,6 +132,7 @@ Before applying it, update the `hostPath` values to match the directories on you
 - Change detection uses `size`, `mtime_ns`, `inode`, and `device`. That is fast and practical for scheduled scans, but it is not a cryptographic diff.
 - When a file disappears from disk, the container marks it inactive in SQLite and unpins the CID if no other active path still references it.
 - When a file changes, it is re-added to IPFS and gets a new CID if the content changed.
+- `UPLOAD_BANDWIDTH_LIMIT` uses Linux traffic control on the container's egress interface, so it caps all outbound traffic from this container and requires `NET_ADMIN`.
 
 ## Build
 
@@ -138,4 +147,3 @@ docker build \
   --build-arg KUBO_IMAGE_TAG=latest \
   -t ghcr.io/bstone108/ipfs-cid-docker:latest .
 ```
-

@@ -15,11 +15,13 @@ ENV PYTHONUNBUFFERED=1 \
     SCAN_PATHS=/mnt \
     RESCAN_INTERVAL=5m \
     SCAN_PRIORITY=normal \
-    IPFS_PROFILE=server
+    IPFS_PROFILE=server \
+    UPLOAD_BANDWIDTH_LIMIT= \
+    BANDWIDTH_INTERFACE=
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends tini ca-certificates; \
+    apt-get install -y --no-install-recommends tini ca-certificates iproute2; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=kubo /usr/local/bin/ipfs /usr/local/bin/ipfs

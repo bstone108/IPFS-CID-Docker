@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.service import load_config, parse_interval, resolve_scan_roots
+from app.service import load_config, parse_bandwidth_limit, parse_interval, resolve_scan_roots
 
 
 class ParseIntervalTests(unittest.TestCase):
@@ -19,6 +19,31 @@ class ParseIntervalTests(unittest.TestCase):
     def test_rejects_bad_units(self) -> None:
         with self.assertRaises(ValueError):
             parse_interval("5fortnights")
+
+
+class ParseBandwidthLimitTests(unittest.TestCase):
+    def test_supports_bit_rates(self) -> None:
+        limit = parse_bandwidth_limit("10mbit")
+        self.assertIsNotNone(limit)
+        self.assertEqual(limit.bits_per_second, 10_000_000)
+        self.assertEqual(limit.tc_rate, "10000000bit")
+
+        limit = parse_bandwidth_limit("10mbit/s")
+        self.assertIsNotNone(limit)
+        self.assertEqual(limit.bits_per_second, 10_000_000)
+
+    def test_supports_byte_rates(self) -> None:
+        limit = parse_bandwidth_limit("5 MiB/s")
+        self.assertIsNotNone(limit)
+        self.assertEqual(limit.bits_per_second, 41_943_040)
+
+    def test_supports_disabled_values(self) -> None:
+        self.assertIsNone(parse_bandwidth_limit("off"))
+        self.assertIsNone(parse_bandwidth_limit("0"))
+
+    def test_rejects_bad_units(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_bandwidth_limit("10 llamas")
 
 
 class ResolveScanRootsTests(unittest.TestCase):
@@ -60,6 +85,23 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.ipfs_path, Path("/state/ipfs"))
         self.assertEqual(config.db_path, Path("/state/index/index.db"))
         self.assertEqual(config.export_path, Path("/state/index/current-index.json"))
+
+    def test_loads_upload_bandwidth_limit(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "RESCAN_INTERVAL": "5m",
+                "SCAN_PRIORITY": "normal",
+                "UPLOAD_BANDWIDTH_LIMIT": "10mbit",
+                "BANDWIDTH_INTERFACE": "eth9",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertIsNotNone(config.upload_bandwidth_limit)
+        self.assertEqual(config.upload_bandwidth_limit.bits_per_second, 10_000_000)
+        self.assertEqual(config.bandwidth_interface, "eth9")
 
 
 if __name__ == "__main__":
