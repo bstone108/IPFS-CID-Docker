@@ -30,7 +30,7 @@ def make_config(
     db_path: str | None = None,
     export_path: str | None = None,
     ipfs_path: str | None = None,
-    kubo_version: str = "v0.38.2",
+    kubo_version: str = "v0.40.1",
     ipfs_add_profile: IpfsAddProfile | None = None,
     upload_bandwidth_limit=None,
     upload_bandwidth_method: str = "auto",
@@ -144,7 +144,7 @@ class LoadConfigTests(unittest.TestCase):
             "os.environ",
             {
                 "CONFIG_PATH": "/state",
-                "KUBO_VERSION": "v0.38.2",
+                "KUBO_VERSION": "v0.40.1",
                 "RESCAN_INTERVAL": "5m",
                 "SCAN_PRIORITY": "normal",
             },
@@ -166,7 +166,7 @@ class LoadConfigTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "KUBO_VERSION": "v0.38.2",
+                "KUBO_VERSION": "v0.40.1",
                 "RESCAN_INTERVAL": "5m",
                 "SCAN_PRIORITY": "normal",
                 "UPLOAD_BANDWIDTH_LIMIT": "10mbit",
@@ -188,7 +188,7 @@ class LoadConfigTests(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "KUBO_VERSION": "v0.38.2",
+                "KUBO_VERSION": "v0.40.1",
                 "RESCAN_INTERVAL": "5m",
                 "SCAN_PRIORITY": "normal",
                 "IPFS_ADD_PROFILE": "kubo-default",
@@ -326,7 +326,7 @@ class ScannerImportProfileTests(unittest.TestCase):
 
             current_profile = build_ipfs_add_profile(
                 profile_name="matrix-share-client",
-                kubo_version="v0.38.2",
+                kubo_version="v0.40.1",
                 cid_version_override=None,
                 raw_leaves_override=None,
                 hash_function_override=None,

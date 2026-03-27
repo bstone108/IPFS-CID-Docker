@@ -71,7 +71,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           build-args: |
-            KUBO_IMAGE_TAG=v0.38.2
+            KUBO_IMAGE_TAG=v0.40.1
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

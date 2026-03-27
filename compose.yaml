@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        KUBO_IMAGE_TAG: v0.38.2
+        KUBO_IMAGE_TAG: v0.40.1
     image: ghcr.io/bstone108/ipfs-cid-docker:latest
     restart: unless-stopped
     cap_add:

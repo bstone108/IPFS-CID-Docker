@@ -11,7 +11,7 @@ This image reuses the official `ipfs/kubo` image for the `ipfs` binary and adds 
 
 The default behavior is intentionally close to zero configuration: mount one or more host directories anywhere under `/mnt/<name>`, start the container, and it will index everything below `/mnt`.
 
-The default CID settings are tuned to match the companion Matrix media share client: `cid-version=1` with Kubo's normal defaults, built against Kubo `v0.38.2` instead of floating on `latest`.
+The default CID settings are tuned to match the companion Matrix media share client: `cid-version=1` with Kubo's normal defaults, built against Kubo `v0.40.1` instead of floating on `latest`.
 
 ## How It Works
 
@@ -263,10 +263,10 @@ Before applying it, update the `hostPath` values to match the directories on you
 docker build -t ghcr.io/bstone108/ipfs-cid-docker:latest .
 ```
 
-The Dockerfile already pins the upstream Kubo image to the same `v0.38.2` line used by the companion Matrix media share client. If you want to change that on purpose:
+The Dockerfile already pins the upstream Kubo image to the same `v0.40.1` line used by the companion Matrix media share client. If you want to change that on purpose:
 
 ```bash
 docker build \
-  --build-arg KUBO_IMAGE_TAG=v0.38.2 \
+  --build-arg KUBO_IMAGE_TAG=v0.40.1 \
   -t ghcr.io/bstone108/ipfs-cid-docker:latest .
 ```
