@@ -10,10 +10,15 @@ services:
       - NET_ADMIN
     environment:
       CONFIG_PATH: /config
+      SCAN_PATHS: /mnt
       RESCAN_INTERVAL: 15m
       SCAN_PRIORITY: low
-      SCAN_PATHS: /mnt
       UPLOAD_BANDWIDTH_LIMIT: 10mbit
+      # IPFS_PATH: /config/ipfs
+      # INDEX_DB_PATH: /config/index/index.db
+      # INDEX_EXPORT_PATH: /config/index/current-index.json
+      # IPFS_PROFILE: server
+      # BANDWIDTH_INTERFACE: eth0
     ports:
       - "4001:4001"
       - "4001:4001/udp"

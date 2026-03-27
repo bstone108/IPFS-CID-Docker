@@ -112,7 +112,44 @@ http://<host>:8080/ipfs/<file_cid>
 
 ## Compose
 
-A sample [`compose.yaml`](compose.yaml) is included. It already includes `UPLOAD_BANDWIDTH_LIMIT` and `NET_ADMIN`; update the bind mounts and sample limit before using it.
+A sample [`compose.yaml`](compose.yaml) is included. This is the same basic setup in copy-paste form:
+
+```yaml
+services:
+  ipfs-autoscan:
+    image: ghcr.io/bstone108/ipfs-cid-docker:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      CONFIG_PATH: /config
+      SCAN_PATHS: /mnt
+      RESCAN_INTERVAL: 15m
+      SCAN_PRIORITY: low
+      UPLOAD_BANDWIDTH_LIMIT: 10mbit
+      # IPFS_PATH: /config/ipfs
+      # INDEX_DB_PATH: /config/index/index.db
+      # INDEX_EXPORT_PATH: /config/index/current-index.json
+      # IPFS_PROFILE: server
+      # BANDWIDTH_INTERFACE: eth0
+    ports:
+      - "4001:4001"
+      - "4001:4001/udp"
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ./config:/config
+      - /stuff/stupidity/whatever:/mnt/whatever:ro
+      - /other/media:/mnt/media:ro
+```
+
+Start it with:
+
+```bash
+docker compose up -d
+```
+
+The commented entries are optional overrides. If you do not want an upload cap, remove `UPLOAD_BANDWIDTH_LIMIT` and `NET_ADMIN`.
 
 ## Kubernetes
 
