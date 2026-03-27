@@ -20,6 +20,8 @@ The default behavior is intentionally close to zero configuration: mount one or 
 
 This version is intentionally file-CID focused. It does not maintain an extra mirrored directory tree in IPFS MFS, which keeps scans lighter and avoids extra copy/remove operations.
 
+The first scan runs immediately on startup once the IPFS daemon is ready. `RESCAN_INTERVAL` controls the delay between later scans, not the initial import.
+
 ## Environment Variables
 
 | Variable | Default | Notes |

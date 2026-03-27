@@ -1,9 +1,18 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from app.service import load_config, parse_bandwidth_limit, parse_interval, resolve_scan_roots
+import app.service as service
+from app.service import (
+    Config,
+    PriorityProfile,
+    ScanSummary,
+    load_config,
+    parse_bandwidth_limit,
+    parse_interval,
+    resolve_scan_roots,
+)
 
 
 class ParseIntervalTests(unittest.TestCase):
@@ -103,6 +112,70 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.upload_bandwidth_limit.bits_per_second, 10_000_000)
         self.assertEqual(config.bandwidth_interface, "eth9")
 
+
+class MainLoopTests(unittest.TestCase):
+    def test_runs_first_scan_immediately_on_startup(self) -> None:
+        config = Config(
+            config_path=Path("/config"),
+            mount_root=Path("/mnt"),
+            scan_paths_raw="/mnt",
+            rescan_interval_seconds=300,
+            rescan_interval_text="5m",
+            scan_priority="normal",
+            profile=PriorityProfile(
+                niceness=0,
+                per_file_pause=0.0,
+                changed_file_pause=0.0,
+                batch_size=0,
+                batch_pause=0.0,
+            ),
+            db_path=Path("/config/index/index.db"),
+            export_path=Path("/config/index/current-index.json"),
+            ipfs_path=Path("/config/ipfs"),
+            ipfs_profiles=("server",),
+            upload_bandwidth_limit=None,
+            bandwidth_interface=None,
+        )
+        scanner_instances = []
+
+        class FakeScanner:
+            def __init__(self, _config: Config):
+                self.stopped = False
+                self.scan_once = Mock(side_effect=self._scan_once)
+                scanner_instances.append(self)
+
+            def _scan_once(self) -> ScanSummary:
+                self.stopped = True
+                return ScanSummary(files_seen=1, files_added=1)
+
+            def should_stop(self) -> bool:
+                return self.stopped
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        fake_daemon = Mock()
+        fake_daemon.poll.return_value = None
+
+        with (
+            patch.object(service, "load_config", return_value=config),
+            patch.object(service, "setup_logging"),
+            patch.object(service, "ensure_parent_dir"),
+            patch.object(service, "ensure_ipfs_repo"),
+            patch.object(service, "apply_upload_bandwidth_limit"),
+            patch.object(service, "start_ipfs_daemon", return_value=fake_daemon),
+            patch.object(service, "wait_for_ipfs"),
+            patch.object(service, "stop_process_group"),
+            patch.object(service.signal, "signal"),
+            patch.object(service.time, "sleep") as sleep_mock,
+            patch.object(service, "Scanner", FakeScanner),
+        ):
+            result = service.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(scanner_instances), 1)
+        scanner_instances[0].scan_once.assert_called_once()
+        sleep_mock.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
