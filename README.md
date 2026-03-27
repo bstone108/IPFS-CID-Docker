@@ -106,6 +106,18 @@ http://<host>:8080/ipfs/<file_cid>
 
 A sample [`compose.yaml`](/Users/brandonstone/Documents/Source%20Code/IPFS%20Docker/compose.yaml) is included. Update the bind mounts and image name before using it.
 
+## Kubernetes
+
+A sample Kubernetes manifest is included at [`k8s/ipfs-cid-docker.yaml`](/Users/brandonstone/Documents/Source%20Code/IPFS%20Docker/k8s/ipfs-cid-docker.yaml).
+
+Apply it with:
+
+```bash
+kubectl apply -f k8s/ipfs-cid-docker.yaml
+```
+
+Before applying it, update the `hostPath` values to match the directories on your node that you want mounted under `/mnt`.
+
 ## Notes and Tradeoffs
 
 - Symlinks are skipped so the scanner cannot accidentally walk out of `/mnt` or loop forever.
