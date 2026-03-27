@@ -2,6 +2,7 @@ ARG KUBO_IMAGE_TAG=v0.38.2
 FROM ipfs/kubo:${KUBO_IMAGE_TAG} AS kubo
 
 FROM python:3.12-slim-bookworm
+ARG KUBO_IMAGE_TAG=v0.38.2
 
 LABEL org.opencontainers.image.source="https://github.com/bstone108/IPFS-CID-Docker" \
       org.opencontainers.image.description="Kubo-based IPFS container that scans /mnt, tracks files in SQLite, and publishes per-file CIDs." \
