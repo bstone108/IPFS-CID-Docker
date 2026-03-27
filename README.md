@@ -1,6 +1,6 @@
 # IPFS CID Docker
 
-This image wraps the official `ipfs/kubo` container and adds a lightweight Python scanner that:
+This image reuses the official `ipfs/kubo` image for the `ipfs` binary and adds a lightweight Python scanner that:
 
 - scans `/mnt` recursively on a schedule
 - tracks file state in SQLite

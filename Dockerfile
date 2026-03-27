@@ -1,5 +1,7 @@
 ARG KUBO_IMAGE_TAG=latest
-FROM ipfs/kubo:${KUBO_IMAGE_TAG}
+FROM ipfs/kubo:${KUBO_IMAGE_TAG} AS kubo
+
+FROM python:3.12-slim-bookworm
 
 LABEL org.opencontainers.image.source="https://github.com/bstone108/IPFS-CID-Docker" \
       org.opencontainers.image.description="Kubo-based IPFS container that scans /mnt, tracks files in SQLite, and publishes per-file CIDs." \
@@ -16,19 +18,11 @@ ENV PYTHONUNBUFFERED=1 \
     IPFS_PROFILE=server
 
 RUN set -eux; \
-    if command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache python3 sqlite tini; \
-    elif command -v apt-get >/dev/null 2>&1; then \
-        apt-get update; \
-        apt-get install -y --no-install-recommends python3 sqlite3 tini; \
-        rm -rf /var/lib/apt/lists/*; \
-    elif command -v microdnf >/dev/null 2>&1; then \
-        microdnf install -y python3 sqlite tini; \
-        microdnf clean all; \
-    else \
-        echo "Unsupported ipfs/kubo base image package manager" >&2; \
-        exit 1; \
-    fi
+    apt-get update; \
+    apt-get install -y --no-install-recommends tini ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=kubo /usr/local/bin/ipfs /usr/local/bin/ipfs
 
 WORKDIR /app
 
