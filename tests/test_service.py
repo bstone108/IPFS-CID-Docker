@@ -177,5 +177,41 @@ class MainLoopTests(unittest.TestCase):
         scanner_instances[0].scan_once.assert_called_once()
         sleep_mock.assert_not_called()
 
+
+class UploadBandwidthLimitTests(unittest.TestCase):
+    def test_continues_without_limit_if_tc_fails(self) -> None:
+        config = Config(
+            config_path=Path("/config"),
+            mount_root=Path("/mnt"),
+            scan_paths_raw="/mnt",
+            rescan_interval_seconds=300,
+            rescan_interval_text="5m",
+            scan_priority="normal",
+            profile=PriorityProfile(
+                niceness=0,
+                per_file_pause=0.0,
+                changed_file_pause=0.0,
+                batch_size=0,
+                batch_pause=0.0,
+            ),
+            db_path=Path("/config/index/index.db"),
+            export_path=Path("/config/index/current-index.json"),
+            ipfs_path=Path("/config/ipfs"),
+            ipfs_profiles=("server",),
+            upload_bandwidth_limit=parse_bandwidth_limit("10mbit"),
+            bandwidth_interface="eth0",
+        )
+        failed_result = Mock(returncode=1, stderr="RTNETLINK answers: Operation not permitted")
+
+        with (
+            patch.object(service.subprocess, "run", return_value=failed_result) as run_mock,
+            patch.object(service.LOGGER, "warning") as warning_mock,
+        ):
+            applied = service.apply_upload_bandwidth_limit(config)
+
+        self.assertFalse(applied)
+        run_mock.assert_called_once()
+        warning_mock.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()

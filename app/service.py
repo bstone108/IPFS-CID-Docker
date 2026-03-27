@@ -934,33 +934,33 @@ def detect_egress_interface() -> str:
     raise RuntimeError("Could not determine the container egress network interface")
 
 
-def apply_upload_bandwidth_limit(config: Config) -> None:
+def apply_upload_bandwidth_limit(config: Config) -> bool:
     limit = config.upload_bandwidth_limit
     if limit is None:
-        return
+        return False
 
-    interface = config.bandwidth_interface or detect_egress_interface()
-    command = [
-        "tc",
-        "qdisc",
-        "replace",
-        "dev",
-        interface,
-        "root",
-        "tbf",
-        "rate",
-        limit.tc_rate,
-        "burst",
-        f"{limit.tc_burst_bytes}b",
-        "latency",
-        "100ms",
-    ]
-    LOGGER.info(
-        "Applying upload bandwidth limit %s on interface %s",
-        limit.raw,
-        interface,
-    )
     try:
+        interface = config.bandwidth_interface or detect_egress_interface()
+        command = [
+            "tc",
+            "qdisc",
+            "replace",
+            "dev",
+            interface,
+            "root",
+            "tbf",
+            "rate",
+            limit.tc_rate,
+            "burst",
+            f"{limit.tc_burst_bytes}b",
+            "latency",
+            "100ms",
+        ]
+        LOGGER.info(
+            "Applying upload bandwidth limit %s on interface %s",
+            limit.raw,
+            interface,
+        )
         result = subprocess.run(
             command,
             check=False,
@@ -968,18 +968,29 @@ def apply_upload_bandwidth_limit(config: Config) -> None:
             text=True,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError(
+        LOGGER.warning(
             "tc is not installed in the container image, so upload bandwidth limiting "
-            "cannot be enabled"
-        ) from exc
+            "cannot be enabled; continuing without it (%s)",
+            exc,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning(
+            "Could not prepare upload bandwidth limiting; continuing without it (%s)",
+            exc,
+        )
+        return False
 
     if result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        raise RuntimeError(
+        LOGGER.warning(
             "Failed to apply upload bandwidth limit. "
             "If you enabled UPLOAD_BANDWIDTH_LIMIT, also grant NET_ADMIN. "
-            f"tc said: {stderr}"
+            "Continuing without bandwidth limiting. tc said: %s",
+            stderr,
         )
+        return False
+    return True
 
 
 def stop_process_group(process: subprocess.Popen[str] | None) -> None:

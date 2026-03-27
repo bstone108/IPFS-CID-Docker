@@ -34,7 +34,7 @@ The first scan runs immediately on startup once the IPFS daemon is ready. `RESCA
 | `INDEX_EXPORT_PATH` | `/config/index/current-index.json` | JSON manifest path. |
 | `IPFS_PATH` | `/config/ipfs` | IPFS repo path. Persist this volume if you want your node and pins to survive restarts. |
 | `IPFS_PROFILE` | `server` | Comma-separated Kubo config profiles applied only when the repo is first initialized. |
-| `UPLOAD_BANDWIDTH_LIMIT` | disabled | Optional container-wide outbound bandwidth cap such as `10mbit`, `100Mbps`, or `5MiB/s`. This throttles uploads and any other egress traffic from the container. |
+| `UPLOAD_BANDWIDTH_LIMIT` | disabled | Optional container-wide outbound bandwidth cap such as `10mbit`, `100Mbps`, or `5MiB/s`. This throttles uploads and any other egress traffic from the container when the host honors `tc` and `NET_ADMIN`. |
 | `BANDWIDTH_INTERFACE` | auto-detect | Optional override for the Linux network interface that `tc` should shape if auto-detection does not pick the right one. |
 
 ## Quick Start
@@ -171,7 +171,8 @@ Before applying it, update the `hostPath` values to match the directories on you
 - Change detection uses `size`, `mtime_ns`, `inode`, and `device`. That is fast and practical for scheduled scans, but it is not a cryptographic diff.
 - When a file disappears from disk, the container marks it inactive in SQLite and unpins the CID if no other active path still references it.
 - When a file changes, it is re-added to IPFS and gets a new CID if the content changed.
-- `UPLOAD_BANDWIDTH_LIMIT` uses Linux traffic control on the container's egress interface, so it caps all outbound traffic from this container and requires `NET_ADMIN`.
+- `UPLOAD_BANDWIDTH_LIMIT` uses Linux traffic control on the container's egress interface, so it caps all outbound traffic from this container and usually requires `NET_ADMIN`.
+- If the host or compose tool refuses traffic control or capabilities, the container now logs a warning and keeps running without the cap instead of crash-looping.
 
 ## Build
 
