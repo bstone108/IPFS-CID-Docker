@@ -45,11 +45,23 @@ spec:
               value: low
             - name: SCAN_PATHS
               value: /mnt
+            - name: IPFS_ADD_PROFILE
+              value: matrix-share-client
             - name: UPLOAD_BANDWIDTH_LIMIT
               value: 10mbit
             # - name: UPLOAD_BANDWIDTH_METHOD
             #   value: auto
             # - name: UPLOAD_BANDWIDTH_REQUIRED
+            #   value: "false"
+            # - name: IPFS_ADD_CID_VERSION
+            #   value: "1"
+            # - name: IPFS_ADD_RAW_LEAVES
+            #   value: "true"
+            # - name: IPFS_ADD_HASH
+            #   value: sha2-256
+            # - name: IPFS_ADD_CHUNKER
+            #   value: size-262144
+            # - name: IPFS_ADD_TRICKLE
             #   value: "false"
           securityContext:
             capabilities:

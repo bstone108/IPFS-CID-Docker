@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        KUBO_IMAGE_TAG: latest
+        KUBO_IMAGE_TAG: v0.38.2
     image: ghcr.io/bstone108/ipfs-cid-docker:latest
     restart: unless-stopped
     cap_add:
@@ -13,6 +13,7 @@ services:
       SCAN_PATHS: /mnt
       RESCAN_INTERVAL: 15m
       SCAN_PRIORITY: low
+      IPFS_ADD_PROFILE: matrix-share-client
       UPLOAD_BANDWIDTH_LIMIT: 10mbit
       # UPLOAD_BANDWIDTH_METHOD: auto
       # UPLOAD_BANDWIDTH_REQUIRED: "false"
@@ -20,6 +21,11 @@ services:
       # INDEX_DB_PATH: /config/index/index.db
       # INDEX_EXPORT_PATH: /config/index/current-index.json
       # IPFS_PROFILE: server
+      # IPFS_ADD_CID_VERSION: "1"
+      # IPFS_ADD_RAW_LEAVES: "true"
+      # IPFS_ADD_HASH: sha2-256
+      # IPFS_ADD_CHUNKER: size-262144
+      # IPFS_ADD_TRICKLE: "false"
       # BANDWIDTH_INTERFACE: eth0
     ports:
       - "4001:4001"

@@ -1,4 +1,4 @@
-ARG KUBO_IMAGE_TAG=latest
+ARG KUBO_IMAGE_TAG=v0.38.2
 FROM ipfs/kubo:${KUBO_IMAGE_TAG} AS kubo
 
 FROM python:3.12-slim-bookworm
@@ -9,6 +9,7 @@ LABEL org.opencontainers.image.source="https://github.com/bstone108/IPFS-CID-Doc
 
 ENV PYTHONUNBUFFERED=1 \
     CONFIG_PATH=/config \
+    KUBO_VERSION=${KUBO_IMAGE_TAG} \
     IPFS_PATH=/config/ipfs \
     INDEX_DB_PATH=/config/index/index.db \
     INDEX_EXPORT_PATH=/config/index/current-index.json \
@@ -16,6 +17,12 @@ ENV PYTHONUNBUFFERED=1 \
     RESCAN_INTERVAL=5m \
     SCAN_PRIORITY=normal \
     IPFS_PROFILE=server \
+    IPFS_ADD_PROFILE=matrix-share-client \
+    IPFS_ADD_CID_VERSION= \
+    IPFS_ADD_RAW_LEAVES= \
+    IPFS_ADD_HASH= \
+    IPFS_ADD_CHUNKER= \
+    IPFS_ADD_TRICKLE= \
     UPLOAD_BANDWIDTH_LIMIT= \
     UPLOAD_BANDWIDTH_METHOD=auto \
     UPLOAD_BANDWIDTH_REQUIRED=false \

@@ -59,6 +59,11 @@ BANDWIDTH_DISABLED_VALUES = {
 BOOLEAN_TRUE_VALUES = {"1", "true", "yes", "on"}
 BOOLEAN_FALSE_VALUES = {"0", "false", "no", "off", ""}
 BANDWIDTH_METHOD_CHOICES = ("auto", "tbf", "htb", "netem")
+IPFS_ADD_PROFILE_CHOICES = (
+    "matrix-share-client",
+    "cidv1-raw",
+    "kubo-default",
+)
 
 BANDWIDTH_UNIT_MULTIPLIERS = {
     "b/s": 1,
@@ -141,6 +146,60 @@ class BandwidthLimit:
 
 
 @dataclass(frozen=True)
+class IpfsAddProfile:
+    profile_name: str
+    cid_version: int | None
+    raw_leaves: bool | None
+    hash_function: str | None
+    chunker: str | None
+    trickle: bool | None
+    kubo_version: str
+
+    @property
+    def cli_args(self) -> tuple[str, ...]:
+        args = ["-Q", "--pin=true", "--wrap-with-directory=false"]
+        if self.cid_version is not None:
+            args.append(f"--cid-version={self.cid_version}")
+        if self.raw_leaves is not None:
+            args.append(f"--raw-leaves={'true' if self.raw_leaves else 'false'}")
+        if self.hash_function:
+            args.append(f"--hash={self.hash_function}")
+        if self.chunker:
+            args.append(f"--chunker={self.chunker}")
+        if self.trickle is not None:
+            args.append(f"--trickle={'true' if self.trickle else 'false'}")
+        return tuple(args)
+
+    @property
+    def signature(self) -> str:
+        return json.dumps(
+            {
+                "chunker": self.chunker,
+                "cid_version": self.cid_version,
+                "hash_function": self.hash_function,
+                "kubo_version": self.kubo_version,
+                "profile_name": self.profile_name,
+                "raw_leaves": self.raw_leaves,
+                "trickle": self.trickle,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def as_manifest_object(self) -> dict[str, object | None]:
+        return {
+            "profile": self.profile_name,
+            "cid_version": self.cid_version,
+            "raw_leaves": self.raw_leaves,
+            "hash_function": self.hash_function,
+            "chunker": self.chunker,
+            "trickle": self.trickle,
+            "kubo_version": self.kubo_version,
+            "signature": self.signature,
+        }
+
+
+@dataclass(frozen=True)
 class Config:
     config_path: Path
     mount_root: Path
@@ -153,6 +212,8 @@ class Config:
     export_path: Path
     ipfs_path: Path
     ipfs_profiles: tuple[str, ...]
+    kubo_version: str
+    ipfs_add_profile: IpfsAddProfile
     upload_bandwidth_limit: BandwidthLimit | None
     upload_bandwidth_method: str
     upload_bandwidth_required: bool
@@ -186,6 +247,7 @@ class Scanner:
 
     def scan_once(self) -> ScanSummary:
         roots = resolve_scan_roots(self.config.scan_paths_raw, self.config.mount_root)
+        mount_root = self.config.mount_root.resolve()
         ensure_parent_dir(self.config.db_path)
         ensure_parent_dir(self.config.export_path)
 
@@ -212,14 +274,18 @@ class Scanner:
                         self.maybe_pause(file_counter, changed=False)
 
                         path_str = str(path)
-                        relative_path = str(path.relative_to(self.config.mount_root))
+                        relative_path = str(path.relative_to(mount_root))
                         stat_result = path.stat()
 
                         existing_row = existing.get(path_str)
                         seen_paths.add(path_str)
                         summary.files_seen += 1
 
-                        if existing_row and row_matches_stat(existing_row, stat_result):
+                        if existing_row and row_matches_file_state(
+                            existing_row,
+                            stat_result,
+                            self.config.ipfs_add_profile.signature,
+                        ):
                             summary.files_unchanged += 1
                             touch_seen_row(conn, path_str)
                             continue
@@ -232,12 +298,23 @@ class Scanner:
                                 relative_path=relative_path,
                                 root_path=str(root),
                                 cid=cid,
+                                import_profile=self.config.ipfs_add_profile.signature,
                                 stat_result=stat_result,
                             )
                             if existing_row and existing_row["cid"]:
                                 summary.files_updated += 1
                             else:
                                 summary.files_added += 1
+                            if (
+                                existing_row
+                                and existing_row["cid"]
+                                and existing_row["cid"] != cid
+                            ):
+                                self.maybe_unpin(
+                                    conn=conn,
+                                    cid=existing_row["cid"],
+                                    excluded_paths={path_str},
+                                )
                             self.maybe_pause(file_counter, changed=True)
                         except Exception as exc:  # noqa: BLE001
                             summary.errors += 1
@@ -286,6 +363,7 @@ class Scanner:
                 export_active_manifest(
                     conn=conn,
                     export_path=self.config.export_path,
+                    add_profile=self.config.ipfs_add_profile,
                     scan_paths=[str(root) for root in roots],
                 )
                 finish_scan_record(conn, scan_id, "ok", summary)
@@ -313,10 +391,7 @@ class Scanner:
         result = run_ipfs(
             [
                 "add",
-                "-Q",
-                "--pin=true",
-                "--cid-version=1",
-                "--raw-leaves=true",
+                *self.config.ipfs_add_profile.cli_args,
                 str(path),
             ],
             niceness=self.config.profile.niceness,
@@ -402,6 +477,87 @@ def parse_profiles(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
+def parse_optional_bool(value: str, *, name: str) -> bool | None:
+    if not value.strip():
+        return None
+    return parse_bool(value, name=name)
+
+
+def parse_optional_cid_version(value: str) -> int | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text not in {"0", "1"}:
+        raise ValueError("IPFS_ADD_CID_VERSION must be 0 or 1")
+    return int(text)
+
+
+def parse_ipfs_add_profile_name(value: str) -> str:
+    text = value.strip().lower() or "matrix-share-client"
+    if text not in IPFS_ADD_PROFILE_CHOICES:
+        raise ValueError(
+            f"IPFS_ADD_PROFILE must be one of {', '.join(IPFS_ADD_PROFILE_CHOICES)}"
+        )
+    return text
+
+
+def build_ipfs_add_profile(
+    *,
+    profile_name: str,
+    kubo_version: str,
+    cid_version_override: int | None,
+    raw_leaves_override: bool | None,
+    hash_function_override: str | None,
+    chunker_override: str | None,
+    trickle_override: bool | None,
+) -> IpfsAddProfile:
+    presets: dict[str, dict[str, object | None]] = {
+        "matrix-share-client": {
+            "cid_version": 1,
+            "raw_leaves": None,
+            "hash_function": None,
+            "chunker": None,
+            "trickle": None,
+        },
+        "cidv1-raw": {
+            "cid_version": 1,
+            "raw_leaves": True,
+            "hash_function": None,
+            "chunker": None,
+            "trickle": None,
+        },
+        "kubo-default": {
+            "cid_version": 0,
+            "raw_leaves": False,
+            "hash_function": None,
+            "chunker": None,
+            "trickle": None,
+        },
+    }
+    settings = dict(presets[profile_name])
+
+    if cid_version_override is not None:
+        settings["cid_version"] = cid_version_override
+    if raw_leaves_override is not None:
+        settings["raw_leaves"] = raw_leaves_override
+    if hash_function_override:
+        settings["hash_function"] = hash_function_override
+    if chunker_override:
+        settings["chunker"] = chunker_override
+    if trickle_override is not None:
+        settings["trickle"] = trickle_override
+
+    return IpfsAddProfile(
+        profile_name=profile_name,
+        cid_version=settings["cid_version"],
+        raw_leaves=settings["raw_leaves"],
+        hash_function=settings["hash_function"],
+        chunker=settings["chunker"],
+        trickle=settings["trickle"],
+        kubo_version=kubo_version,
+    )
+
+
 def parse_bool(value: str, *, name: str) -> bool:
     text = value.strip().lower()
     if text in BOOLEAN_TRUE_VALUES:
@@ -464,6 +620,27 @@ def load_config() -> Config:
     )
     ipfs_path = Path(os.getenv("IPFS_PATH", str(config_path / "ipfs")))
     ipfs_profiles = parse_profiles(os.getenv("IPFS_PROFILE", "server"))
+    kubo_version = os.getenv("KUBO_VERSION", "").strip() or "unknown"
+    ipfs_add_profile_name = parse_ipfs_add_profile_name(
+        os.getenv("IPFS_ADD_PROFILE", "matrix-share-client")
+    )
+    ipfs_add_profile = build_ipfs_add_profile(
+        profile_name=ipfs_add_profile_name,
+        kubo_version=kubo_version,
+        cid_version_override=parse_optional_cid_version(
+            os.getenv("IPFS_ADD_CID_VERSION", "")
+        ),
+        raw_leaves_override=parse_optional_bool(
+            os.getenv("IPFS_ADD_RAW_LEAVES", ""),
+            name="IPFS_ADD_RAW_LEAVES",
+        ),
+        hash_function_override=os.getenv("IPFS_ADD_HASH", "").strip() or None,
+        chunker_override=os.getenv("IPFS_ADD_CHUNKER", "").strip() or None,
+        trickle_override=parse_optional_bool(
+            os.getenv("IPFS_ADD_TRICKLE", ""),
+            name="IPFS_ADD_TRICKLE",
+        ),
+    )
     upload_bandwidth_limit = parse_bandwidth_limit(
         os.getenv("UPLOAD_BANDWIDTH_LIMIT", "")
     )
@@ -493,6 +670,8 @@ def load_config() -> Config:
         export_path=export_path,
         ipfs_path=ipfs_path,
         ipfs_profiles=ipfs_profiles,
+        kubo_version=kubo_version,
+        ipfs_add_profile=ipfs_add_profile,
         upload_bandwidth_limit=upload_bandwidth_limit,
         upload_bandwidth_method=upload_bandwidth_method,
         upload_bandwidth_required=upload_bandwidth_required,
@@ -553,6 +732,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             relative_path TEXT NOT NULL,
             root_path TEXT NOT NULL,
             cid TEXT,
+            import_profile TEXT,
             size INTEGER NOT NULL,
             mtime_ns INTEGER NOT NULL,
             inode INTEGER NOT NULL,
@@ -587,6 +767,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_files_cid_active ON files(cid, active)"
+    )
+    ensure_column(
+        conn,
+        table_name="files",
+        column_name="import_profile",
+        column_sql="ALTER TABLE files ADD COLUMN import_profile TEXT",
     )
     conn.commit()
 
@@ -654,12 +840,32 @@ def touch_seen_row(conn: sqlite3.Connection, path: str) -> None:
     )
 
 
-def row_matches_stat(row: sqlite3.Row, stat_result: os.stat_result) -> bool:
+def ensure_column(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> None:
+    columns = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(column_sql)
+
+
+def row_matches_file_state(
+    row: sqlite3.Row,
+    stat_result: os.stat_result,
+    import_profile_signature: str,
+) -> bool:
     return (
         row["size"] == stat_result.st_size
         and row["mtime_ns"] == stat_result.st_mtime_ns
         and row["inode"] == stat_result.st_ino
         and row["device"] == stat_result.st_dev
+        and row["import_profile"] == import_profile_signature
     )
 
 
@@ -669,6 +875,7 @@ def upsert_successful_file(
     relative_path: str,
     root_path: str,
     cid: str,
+    import_profile: str,
     stat_result: os.stat_result,
 ) -> None:
     now = utcnow()
@@ -679,6 +886,7 @@ def upsert_successful_file(
             relative_path,
             root_path,
             cid,
+            import_profile,
             size,
             mtime_ns,
             inode,
@@ -690,11 +898,12 @@ def upsert_successful_file(
             removed_at,
             last_error
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL)
         ON CONFLICT(path) DO UPDATE SET
             relative_path = excluded.relative_path,
             root_path = excluded.root_path,
             cid = excluded.cid,
+            import_profile = excluded.import_profile,
             size = excluded.size,
             mtime_ns = excluded.mtime_ns,
             inode = excluded.inode,
@@ -710,6 +919,7 @@ def upsert_successful_file(
             relative_path,
             root_path,
             cid,
+            import_profile,
             stat_result.st_size,
             stat_result.st_mtime_ns,
             stat_result.st_ino,
@@ -796,11 +1006,12 @@ def mark_deleted_file(conn: sqlite3.Connection, path: str) -> None:
 def export_active_manifest(
     conn: sqlite3.Connection,
     export_path: Path,
+    add_profile: IpfsAddProfile,
     scan_paths: list[str],
 ) -> None:
     rows = conn.execute(
         """
-        SELECT path, relative_path, root_path, cid, size, mtime_ns, last_seen_at, last_indexed_at
+        SELECT path, relative_path, root_path, cid, import_profile, size, mtime_ns, last_seen_at, last_indexed_at
         FROM files
         WHERE active = 1
         ORDER BY relative_path
@@ -809,6 +1020,7 @@ def export_active_manifest(
 
     payload = {
         "generated_at": utcnow(),
+        "ipfs_add": add_profile.as_manifest_object(),
         "scan_paths": scan_paths,
         "file_count": len(rows),
         "files": [
@@ -817,6 +1029,7 @@ def export_active_manifest(
                 "relative_path": row["relative_path"],
                 "root_path": row["root_path"],
                 "cid": row["cid"],
+                "import_profile": row["import_profile"],
                 "size": row["size"],
                 "mtime_ns": row["mtime_ns"],
                 "last_seen_at": row["last_seen_at"],
@@ -1194,13 +1407,16 @@ def main() -> int:
     os.environ["IPFS_PATH"] = str(config.ipfs_path)
 
     LOGGER.info(
-        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s upload_method=%s required=%s",
+        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s upload_method=%s required=%s ipfs_add_profile=%s kubo_version=%s add_args=%s",
         config.scan_paths_raw,
         config.rescan_interval_text,
         config.scan_priority,
         config.upload_bandwidth_limit.raw if config.upload_bandwidth_limit else "off",
         config.upload_bandwidth_method,
         config.upload_bandwidth_required,
+        config.ipfs_add_profile.profile_name,
+        config.kubo_version,
+        " ".join(config.ipfs_add_profile.cli_args),
     )
 
     ensure_parent_dir(config.db_path)

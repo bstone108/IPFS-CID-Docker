@@ -8,7 +8,7 @@
   <Support>https://github.com/bstone108/IPFS-CID-Docker/issues</Support>
   <Project>https://github.com/bstone108/IPFS-CID-Docker</Project>
   <ReadMe>https://github.com/bstone108/IPFS-CID-Docker#readme</ReadMe>
-  <Overview>Lightweight IPFS sidecar that scans mounted files under /mnt, stores file-to-CID state in SQLite under /config, and republishes changed files automatically. The first scan runs on startup once IPFS is ready. Upload throttling is disabled by default in this Unraid template; if you enable UPLOAD_BANDWIDTH_LIMIT, leave Extra Parameters set to --cap-add=NET_ADMIN. Auto mode will try tbf, htb, then netem rate shaping.</Overview>
+  <Overview>Lightweight IPFS sidecar that scans mounted files under /mnt, stores file-to-CID state in SQLite under /config, and republishes changed files automatically. The first scan runs on startup once IPFS is ready. The default IPFS add profile matches the companion Matrix media share client (CIDv1 with Kubo defaults). Upload throttling is disabled by default in this Unraid template; if you enable UPLOAD_BANDWIDTH_LIMIT, leave Extra Parameters set to --cap-add=NET_ADMIN. Auto mode will try tbf, htb, then netem rate shaping.</Overview>
   <Category>Network:Storage:Tools:Utilities:</Category>
   <WebUI>http://[IP]:[PORT:8080]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/bstone108/IPFS-CID-Docker/main/unraid/ipfs-cid-docker.xml</TemplateURL>
@@ -34,6 +34,12 @@
   <Config Name="UPLOAD_BANDWIDTH_METHOD" Target="UPLOAD_BANDWIDTH_METHOD" Default="auto" Description="Bandwidth shaping method: auto, tbf, htb, or netem. Auto tries multiple Linux qdisc types for better host compatibility." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="UPLOAD_BANDWIDTH_REQUIRED" Target="UPLOAD_BANDWIDTH_REQUIRED" Default="false" Description="Set to true to fail startup if no bandwidth shaping method can be applied." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="IPFS_PROFILE" Target="IPFS_PROFILE" Default="server" Description="Comma-separated Kubo config profiles applied only when the repo is first initialized." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_PROFILE" Target="IPFS_ADD_PROFILE" Default="matrix-share-client" Description="IPFS add profile. matrix-share-client matches the companion uploader, cidv1-raw keeps the old explicit raw-leaves mode, and kubo-default matches plain ipfs add defaults." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_CID_VERSION" Target="IPFS_ADD_CID_VERSION" Default="" Description="Optional override for the CID version used when indexing files." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_RAW_LEAVES" Target="IPFS_ADD_RAW_LEAVES" Default="" Description="Optional override for raw leaves (true or false)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_HASH" Target="IPFS_ADD_HASH" Default="" Description="Optional override for the IPFS add hash function, for example sha2-256." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_CHUNKER" Target="IPFS_ADD_CHUNKER" Default="" Description="Optional override for the IPFS add chunker, for example size-262144." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_ADD_TRICKLE" Target="IPFS_ADD_TRICKLE" Default="" Description="Optional override for trickle DAG layout (true or false)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="IPFS_PATH" Target="IPFS_PATH" Default="/config/ipfs" Description="IPFS repo path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="INDEX_DB_PATH" Target="INDEX_DB_PATH" Default="/config/index/index.db" Description="SQLite database path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="INDEX_EXPORT_PATH" Target="INDEX_EXPORT_PATH" Default="/config/index/current-index.json" Description="Exported active manifest path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
