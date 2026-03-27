@@ -1,0 +1,21 @@
+services:
+  ipfs-autoscan:
+    build:
+      context: .
+      args:
+        KUBO_IMAGE_TAG: latest
+    image: ghcr.io/bstone108/ipfs-cid-docker:latest
+    restart: unless-stopped
+    environment:
+      CONFIG_PATH: /config
+      RESCAN_INTERVAL: 15m
+      SCAN_PRIORITY: low
+      SCAN_PATHS: /mnt
+    ports:
+      - "4001:4001"
+      - "4001:4001/udp"
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ./config:/config
+      - /stuff/stupidity/whatever:/mnt/whatever:ro
