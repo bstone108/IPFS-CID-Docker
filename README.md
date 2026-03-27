@@ -35,6 +35,8 @@ The first scan runs immediately on startup once the IPFS daemon is ready. `RESCA
 | `IPFS_PATH` | `/config/ipfs` | IPFS repo path. Persist this volume if you want your node and pins to survive restarts. |
 | `IPFS_PROFILE` | `server` | Comma-separated Kubo config profiles applied only when the repo is first initialized. |
 | `UPLOAD_BANDWIDTH_LIMIT` | disabled | Optional container-wide outbound bandwidth cap such as `10mbit`, `100Mbps`, or `5MiB/s`. This throttles uploads and any other egress traffic from the container when the host honors `tc` and `NET_ADMIN`. |
+| `UPLOAD_BANDWIDTH_METHOD` | `auto` | `auto`, `tbf`, `htb`, or `netem`. `auto` tries multiple Linux traffic-control methods for better host compatibility. |
+| `UPLOAD_BANDWIDTH_REQUIRED` | `false` | If `true`, startup fails unless a bandwidth limit can actually be applied. |
 | `BANDWIDTH_INTERFACE` | auto-detect | Optional override for the Linux network interface that `tc` should shape if auto-detection does not pick the right one. |
 
 ## Quick Start
@@ -129,6 +131,8 @@ services:
       RESCAN_INTERVAL: 15m
       SCAN_PRIORITY: low
       UPLOAD_BANDWIDTH_LIMIT: 10mbit
+      # UPLOAD_BANDWIDTH_METHOD: auto
+      # UPLOAD_BANDWIDTH_REQUIRED: "false"
       # IPFS_PATH: /config/ipfs
       # INDEX_DB_PATH: /config/index/index.db
       # INDEX_EXPORT_PATH: /config/index/current-index.json
@@ -184,6 +188,8 @@ Template notes:
 - `Scan Path 2` and `Scan Path 3` are optional extra mounts under `/mnt`.
 - Leave `SCAN_PATHS` as `/mnt` unless you want to restrict scanning to specific mounted subpaths.
 - If you need more than three scan roots, add more path entries in Unraid under `/mnt/<name>`.
+- `UPLOAD_BANDWIDTH_METHOD` defaults to `auto`, which tries `tbf`, then `htb`, then `netem`.
+- Set `UPLOAD_BANDWIDTH_REQUIRED=true` only if you want the container to fail startup when no shaping method can be applied.
 
 ## Kubernetes
 
@@ -204,7 +210,8 @@ Before applying it, update the `hostPath` values to match the directories on you
 - When a file disappears from disk, the container marks it inactive in SQLite and unpins the CID if no other active path still references it.
 - When a file changes, it is re-added to IPFS and gets a new CID if the content changed.
 - `UPLOAD_BANDWIDTH_LIMIT` uses Linux traffic control on the container's egress interface, so it caps all outbound traffic from this container and usually requires `NET_ADMIN`.
-- If the host or compose tool refuses traffic control or capabilities, the container now logs a warning and keeps running without the cap instead of crash-looping.
+- `UPLOAD_BANDWIDTH_METHOD=auto` tries `tbf` first, then `htb`, then `netem` so the container has a better chance of finding a qdisc the host kernel actually provides.
+- `UPLOAD_BANDWIDTH_REQUIRED=false` keeps the service running with a warning if no shaping method can be applied. Set it to `true` if you want startup to fail instead.
 
 ## Build
 

@@ -102,6 +102,8 @@ class LoadConfigTests(unittest.TestCase):
                 "RESCAN_INTERVAL": "5m",
                 "SCAN_PRIORITY": "normal",
                 "UPLOAD_BANDWIDTH_LIMIT": "10mbit",
+                "UPLOAD_BANDWIDTH_METHOD": "netem",
+                "UPLOAD_BANDWIDTH_REQUIRED": "true",
                 "BANDWIDTH_INTERFACE": "eth9",
             },
             clear=True,
@@ -110,6 +112,8 @@ class LoadConfigTests(unittest.TestCase):
 
         self.assertIsNotNone(config.upload_bandwidth_limit)
         self.assertEqual(config.upload_bandwidth_limit.bits_per_second, 10_000_000)
+        self.assertEqual(config.upload_bandwidth_method, "netem")
+        self.assertTrue(config.upload_bandwidth_required)
         self.assertEqual(config.bandwidth_interface, "eth9")
 
 
@@ -134,6 +138,8 @@ class MainLoopTests(unittest.TestCase):
             ipfs_path=Path("/config/ipfs"),
             ipfs_profiles=("server",),
             upload_bandwidth_limit=None,
+            upload_bandwidth_method="auto",
+            upload_bandwidth_required=False,
             bandwidth_interface=None,
         )
         scanner_instances = []
@@ -178,7 +184,84 @@ class MainLoopTests(unittest.TestCase):
         sleep_mock.assert_not_called()
 
 
+class WaitForIpfsTests(unittest.TestCase):
+    def test_raises_if_daemon_exits_before_api_is_ready(self) -> None:
+        config = Config(
+            config_path=Path("/config"),
+            mount_root=Path("/mnt"),
+            scan_paths_raw="/mnt",
+            rescan_interval_seconds=300,
+            rescan_interval_text="5m",
+            scan_priority="normal",
+            profile=PriorityProfile(
+                niceness=0,
+                per_file_pause=0.0,
+                changed_file_pause=0.0,
+                batch_size=0,
+                batch_pause=0.0,
+            ),
+            db_path=Path("/config/index/index.db"),
+            export_path=Path("/config/index/current-index.json"),
+            ipfs_path=Path("/config/ipfs"),
+            ipfs_profiles=("server",),
+            upload_bandwidth_limit=None,
+            upload_bandwidth_method="auto",
+            upload_bandwidth_required=False,
+            bandwidth_interface=None,
+        )
+        daemon = Mock()
+        daemon.poll.return_value = 1
+
+        with (
+            patch.object(service, "get_ipfs_api_http_url", return_value="http://127.0.0.1:5001/api/v0/version"),
+            patch.object(service.time, "monotonic", side_effect=[0, 0]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "before the API became ready"):
+                service.wait_for_ipfs(config, daemon=daemon, timeout_seconds=1)
+
+
 class UploadBandwidthLimitTests(unittest.TestCase):
+    def test_falls_back_to_htb_when_tbf_is_unavailable(self) -> None:
+        config = Config(
+            config_path=Path("/config"),
+            mount_root=Path("/mnt"),
+            scan_paths_raw="/mnt",
+            rescan_interval_seconds=300,
+            rescan_interval_text="5m",
+            scan_priority="normal",
+            profile=PriorityProfile(
+                niceness=0,
+                per_file_pause=0.0,
+                changed_file_pause=0.0,
+                batch_size=0,
+                batch_pause=0.0,
+            ),
+            db_path=Path("/config/index/index.db"),
+            export_path=Path("/config/index/current-index.json"),
+            ipfs_path=Path("/config/ipfs"),
+            ipfs_profiles=("server",),
+            upload_bandwidth_limit=parse_bandwidth_limit("10mbit"),
+            upload_bandwidth_method="auto",
+            upload_bandwidth_required=False,
+            bandwidth_interface="eth0",
+        )
+
+        def fake_run(command, check, capture_output, text):
+            if command[:6] == ["tc", "qdisc", "replace", "dev", "eth0", "root"] and "tbf" in command:
+                return Mock(returncode=1, stderr="Error: Specified qdisc kind is unknown.")
+            if command[:5] == ["tc", "qdisc", "del", "dev", "eth0"]:
+                return Mock(returncode=0, stderr="")
+            if command[:9] == ["tc", "qdisc", "replace", "dev", "eth0", "root", "handle", "1:", "htb"]:
+                return Mock(returncode=0, stderr="")
+            if command[:9] == ["tc", "class", "replace", "dev", "eth0", "parent", "1:", "classid", "1:1"]:
+                return Mock(returncode=0, stderr="")
+            raise AssertionError(f"Unexpected tc command: {command}")
+
+        with patch.object(service.subprocess, "run", side_effect=fake_run):
+            applied = service.apply_upload_bandwidth_limit(config)
+
+        self.assertTrue(applied)
+
     def test_continues_without_limit_if_tc_fails(self) -> None:
         config = Config(
             config_path=Path("/config"),
@@ -199,6 +282,8 @@ class UploadBandwidthLimitTests(unittest.TestCase):
             ipfs_path=Path("/config/ipfs"),
             ipfs_profiles=("server",),
             upload_bandwidth_limit=parse_bandwidth_limit("10mbit"),
+            upload_bandwidth_method="tbf",
+            upload_bandwidth_required=False,
             bandwidth_interface="eth0",
         )
         failed_result = Mock(returncode=1, stderr="RTNETLINK answers: Operation not permitted")
@@ -210,7 +295,7 @@ class UploadBandwidthLimitTests(unittest.TestCase):
             applied = service.apply_upload_bandwidth_limit(config)
 
         self.assertFalse(applied)
-        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_count, 2)
         warning_mock.assert_called_once()
 
 if __name__ == "__main__":

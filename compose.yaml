@@ -14,6 +14,8 @@ services:
       RESCAN_INTERVAL: 15m
       SCAN_PRIORITY: low
       UPLOAD_BANDWIDTH_LIMIT: 10mbit
+      # UPLOAD_BANDWIDTH_METHOD: auto
+      # UPLOAD_BANDWIDTH_REQUIRED: "false"
       # IPFS_PATH: /config/ipfs
       # INDEX_DB_PATH: /config/index/index.db
       # INDEX_EXPORT_PATH: /config/index/current-index.json

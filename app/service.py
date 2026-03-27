@@ -12,6 +12,8 @@ import sqlite3
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +55,10 @@ BANDWIDTH_DISABLED_VALUES = {
     "off",
     "unlimited",
 }
+
+BOOLEAN_TRUE_VALUES = {"1", "true", "yes", "on"}
+BOOLEAN_FALSE_VALUES = {"0", "false", "no", "off", ""}
+BANDWIDTH_METHOD_CHOICES = ("auto", "tbf", "htb", "netem")
 
 BANDWIDTH_UNIT_MULTIPLIERS = {
     "b/s": 1,
@@ -148,6 +154,8 @@ class Config:
     ipfs_path: Path
     ipfs_profiles: tuple[str, ...]
     upload_bandwidth_limit: BandwidthLimit | None
+    upload_bandwidth_method: str
+    upload_bandwidth_required: bool
     bandwidth_interface: str | None
 
 
@@ -394,6 +402,24 @@ def parse_profiles(value: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in value.split(",") if part.strip())
 
 
+def parse_bool(value: str, *, name: str) -> bool:
+    text = value.strip().lower()
+    if text in BOOLEAN_TRUE_VALUES:
+        return True
+    if text in BOOLEAN_FALSE_VALUES:
+        return False
+    raise ValueError(f"{name} must be one of true/false, yes/no, on/off, or 1/0")
+
+
+def parse_bandwidth_method(value: str) -> str:
+    text = value.strip().lower() or "auto"
+    if text not in BANDWIDTH_METHOD_CHOICES:
+        raise ValueError(
+            f"UPLOAD_BANDWIDTH_METHOD must be one of {', '.join(BANDWIDTH_METHOD_CHOICES)}"
+        )
+    return text
+
+
 def parse_bandwidth_limit(value: str) -> BandwidthLimit | None:
     text = value.strip()
     if not text or text.lower() in BANDWIDTH_DISABLED_VALUES:
@@ -441,6 +467,13 @@ def load_config() -> Config:
     upload_bandwidth_limit = parse_bandwidth_limit(
         os.getenv("UPLOAD_BANDWIDTH_LIMIT", "")
     )
+    upload_bandwidth_method = parse_bandwidth_method(
+        os.getenv("UPLOAD_BANDWIDTH_METHOD", "auto")
+    )
+    upload_bandwidth_required = parse_bool(
+        os.getenv("UPLOAD_BANDWIDTH_REQUIRED", "false"),
+        name="UPLOAD_BANDWIDTH_REQUIRED",
+    )
     bandwidth_interface = os.getenv("BANDWIDTH_INTERFACE", "").strip() or None
 
     if priority not in PRIORITY_PROFILES:
@@ -461,6 +494,8 @@ def load_config() -> Config:
         ipfs_path=ipfs_path,
         ipfs_profiles=ipfs_profiles,
         upload_bandwidth_limit=upload_bandwidth_limit,
+        upload_bandwidth_method=upload_bandwidth_method,
+        upload_bandwidth_required=upload_bandwidth_required,
         bandwidth_interface=bandwidth_interface,
     )
 
@@ -887,21 +922,58 @@ def start_ipfs_daemon() -> subprocess.Popen[str]:
     )
 
 
-def wait_for_ipfs(timeout_seconds: float = 60.0) -> None:
+def get_ipfs_api_http_url(ipfs_path: Path) -> str:
+    config_file = ipfs_path / "config"
+    default_host = "127.0.0.1"
+    default_port = "5001"
+
+    try:
+        payload = json.loads(config_file.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return f"http://{default_host}:{default_port}/api/v0/version"
+
+    api_addr = payload.get("Addresses", {}).get("API", "")
+    match = re.fullmatch(r"/ip4/([^/]+)/tcp/(\d+)", api_addr)
+    if match:
+        host, port = match.groups()
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        return f"http://{host}:{port}/api/v0/version"
+
+    match = re.fullmatch(r"/ip6/([^/]+)/tcp/(\d+)", api_addr)
+    if match:
+        host, port = match.groups()
+        if host == "::":
+            host = "::1"
+        return f"http://[{host}]:{port}/api/v0/version"
+
+    return f"http://{default_host}:{default_port}/api/v0/version"
+
+
+def wait_for_ipfs(
+    config: Config,
+    *,
+    daemon: subprocess.Popen[str] | None = None,
+    timeout_seconds: float = 60.0,
+) -> None:
+    api_url = get_ipfs_api_http_url(config.ipfs_path)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["ipfs", "id"],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=os.environ.copy(),
-        )
-        if result.returncode == 0:
-            LOGGER.info("IPFS API is ready")
-            return
+        if daemon is not None and daemon.poll() is not None:
+            raise RuntimeError(
+                f"IPFS daemon exited unexpectedly with code {daemon.returncode} "
+                "before the API became ready"
+            )
+        request = urllib.request.Request(api_url, data=b"", method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                if 200 <= getattr(response, "status", 200) < 300:
+                    LOGGER.info("IPFS API is ready at %s", api_url)
+                    return
+        except (urllib.error.URLError, OSError):
+            pass
         time.sleep(1)
-    raise TimeoutError("Timed out waiting for IPFS daemon")
+    raise TimeoutError(f"Timed out waiting for IPFS API at {api_url}")
 
 
 def detect_egress_interface() -> str:
@@ -934,15 +1006,30 @@ def detect_egress_interface() -> str:
     raise RuntimeError("Could not determine the container egress network interface")
 
 
-def apply_upload_bandwidth_limit(config: Config) -> bool:
-    limit = config.upload_bandwidth_limit
-    if limit is None:
-        return False
+def run_tc(args: list[str]) -> None:
+    result = subprocess.run(
+        ["tc", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(stderr)
 
-    try:
-        interface = config.bandwidth_interface or detect_egress_interface()
-        command = [
-            "tc",
+
+def clear_root_qdisc(interface: str) -> None:
+    subprocess.run(
+        ["tc", "qdisc", "del", "dev", interface, "root"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def apply_tbf_bandwidth_limit(interface: str, limit: BandwidthLimit) -> None:
+    run_tc(
+        [
             "qdisc",
             "replace",
             "dev",
@@ -956,41 +1043,135 @@ def apply_upload_bandwidth_limit(config: Config) -> bool:
             "latency",
             "100ms",
         ]
-        LOGGER.info(
-            "Applying upload bandwidth limit %s on interface %s",
-            limit.raw,
+    )
+
+
+def apply_htb_bandwidth_limit(interface: str, limit: BandwidthLimit) -> None:
+    run_tc(
+        [
+            "qdisc",
+            "replace",
+            "dev",
             interface,
+            "root",
+            "handle",
+            "1:",
+            "htb",
+            "default",
+            "1",
+        ]
+    )
+    try:
+        run_tc(
+            [
+                "class",
+                "replace",
+                "dev",
+                interface,
+                "parent",
+                "1:",
+                "classid",
+                "1:1",
+                "htb",
+                "rate",
+                limit.tc_rate,
+                "ceil",
+                limit.tc_rate,
+                "burst",
+                f"{limit.tc_burst_bytes}b",
+                "cburst",
+                f"{limit.tc_burst_bytes}b",
+            ]
         )
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        LOGGER.warning(
-            "tc is not installed in the container image, so upload bandwidth limiting "
-            "cannot be enabled; continuing without it (%s)",
-            exc,
-        )
-        return False
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning(
-            "Could not prepare upload bandwidth limiting; continuing without it (%s)",
-            exc,
-        )
+    except Exception:
+        clear_root_qdisc(interface)
+        raise
+
+
+def apply_netem_bandwidth_limit(interface: str, limit: BandwidthLimit) -> None:
+    run_tc(
+        [
+            "qdisc",
+            "replace",
+            "dev",
+            interface,
+            "root",
+            "netem",
+            "rate",
+            limit.tc_rate,
+        ]
+    )
+
+
+def bandwidth_method_sequence(method: str) -> tuple[str, ...]:
+    if method == "auto":
+        return ("tbf", "htb", "netem")
+    return (method,)
+
+
+def apply_upload_bandwidth_limit(config: Config) -> bool:
+    limit = config.upload_bandwidth_limit
+    if limit is None:
         return False
 
-    if result.returncode != 0:
-        stderr = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        LOGGER.warning(
-            "Failed to apply upload bandwidth limit. "
-            "If you enabled UPLOAD_BANDWIDTH_LIMIT, also grant NET_ADMIN. "
-            "Continuing without bandwidth limiting. tc said: %s",
-            stderr,
+    methods = bandwidth_method_sequence(config.upload_bandwidth_method)
+    appliers = {
+        "tbf": apply_tbf_bandwidth_limit,
+        "htb": apply_htb_bandwidth_limit,
+        "netem": apply_netem_bandwidth_limit,
+    }
+
+    try:
+        interface = config.bandwidth_interface or detect_egress_interface()
+    except FileNotFoundError as exc:
+        message = (
+            "tc is not installed in the container image, so upload bandwidth limiting "
+            f"cannot be enabled ({exc})"
         )
+        if config.upload_bandwidth_required:
+            raise RuntimeError(message) from exc
+        LOGGER.warning("%s; continuing without it", message)
         return False
-    return True
+    except Exception as exc:  # noqa: BLE001
+        message = f"Could not prepare upload bandwidth limiting ({exc})"
+        if config.upload_bandwidth_required:
+            raise RuntimeError(message) from exc
+        LOGGER.warning("%s; continuing without it", message)
+        return False
+
+    LOGGER.info(
+        "Applying upload bandwidth limit %s on interface %s using methods=%s",
+        limit.raw,
+        interface,
+        ",".join(methods),
+    )
+
+    errors: list[str] = []
+    for method in methods:
+        try:
+            appliers[method](interface, limit)
+            LOGGER.info(
+                "Applied upload bandwidth limit %s on interface %s using method=%s",
+                limit.raw,
+                interface,
+                method,
+            )
+            return True
+        except FileNotFoundError as exc:
+            errors.append(f"{method}: tc missing ({exc})")
+            break
+        except Exception as exc:  # noqa: BLE001
+            clear_root_qdisc(interface)
+            errors.append(f"{method}: {exc}")
+
+    message = (
+        f"Failed to apply upload bandwidth limit using methods={','.join(methods)}. "
+        + "; ".join(errors)
+    )
+    if config.upload_bandwidth_required:
+        raise RuntimeError(message)
+    LOGGER.warning("%s. Continuing without bandwidth limiting.", message)
+    return False
 
 
 def stop_process_group(process: subprocess.Popen[str] | None) -> None:
@@ -1013,11 +1194,13 @@ def main() -> int:
     os.environ["IPFS_PATH"] = str(config.ipfs_path)
 
     LOGGER.info(
-        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s",
+        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s upload_method=%s required=%s",
         config.scan_paths_raw,
         config.rescan_interval_text,
         config.scan_priority,
         config.upload_bandwidth_limit.raw if config.upload_bandwidth_limit else "off",
+        config.upload_bandwidth_method,
+        config.upload_bandwidth_required,
     )
 
     ensure_parent_dir(config.db_path)
@@ -1037,7 +1220,7 @@ def main() -> int:
 
     try:
         daemon = start_ipfs_daemon()
-        wait_for_ipfs()
+        wait_for_ipfs(config, daemon=daemon)
 
         while not scanner.should_stop():
             if daemon.poll() is not None:

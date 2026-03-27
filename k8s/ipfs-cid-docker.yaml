@@ -47,6 +47,10 @@ spec:
               value: /mnt
             - name: UPLOAD_BANDWIDTH_LIMIT
               value: 10mbit
+            # - name: UPLOAD_BANDWIDTH_METHOD
+            #   value: auto
+            # - name: UPLOAD_BANDWIDTH_REQUIRED
+            #   value: "false"
           securityContext:
             capabilities:
               add:
