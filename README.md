@@ -153,6 +153,38 @@ docker compose up -d
 
 The commented entries are optional overrides. If you do not want an upload cap, remove `UPLOAD_BANDWIDTH_LIMIT` and `NET_ADMIN`.
 
+## Unraid
+
+A dedicated Unraid template is included at [`unraid/ipfs-cid-docker.xml`](unraid/ipfs-cid-docker.xml).
+
+Raw template URL:
+
+```text
+https://raw.githubusercontent.com/bstone108/IPFS-CID-Docker/main/unraid/ipfs-cid-docker.xml
+```
+
+If you manage user templates manually on Unraid, place the XML in:
+
+```text
+/boot/config/plugins/dockerMan/templates-user/
+```
+
+The template is set up so Unraid uses `Extra Parameters` for:
+
+```text
+--cap-add=NET_ADMIN
+```
+
+That gives Unraid a better chance of honoring the capability than some compose wrappers. The template leaves `UPLOAD_BANDWIDTH_LIMIT` set to `off` by default, so first install is safe. If you want upload throttling, set `UPLOAD_BANDWIDTH_LIMIT` to something like `10mbit` and leave the `Extra Parameters` value in place.
+
+Template notes:
+
+- `Config Storage` maps to `/config` and should point at your appdata location.
+- `Scan Path 1` maps to `/mnt/scan1` and is the first host folder to index.
+- `Scan Path 2` and `Scan Path 3` are optional extra mounts under `/mnt`.
+- Leave `SCAN_PATHS` as `/mnt` unless you want to restrict scanning to specific mounted subpaths.
+- If you need more than three scan roots, add more path entries in Unraid under `/mnt/<name>`.
+
 ## Kubernetes
 
 A sample Kubernetes manifest is included at [`k8s/ipfs-cid-docker.yaml`](k8s/ipfs-cid-docker.yaml).

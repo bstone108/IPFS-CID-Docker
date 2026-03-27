@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>IPFS CID Docker</Name>
+  <Repository>ghcr.io/bstone108/ipfs-cid-docker:latest</Repository>
+  <Registry>https://github.com/bstone108/IPFS-CID-Docker/pkgs/container/ipfs-cid-docker</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/bstone108/IPFS-CID-Docker/issues</Support>
+  <Project>https://github.com/bstone108/IPFS-CID-Docker</Project>
+  <ReadMe>https://github.com/bstone108/IPFS-CID-Docker#readme</ReadMe>
+  <Overview>Lightweight IPFS sidecar that scans mounted files under /mnt, stores file-to-CID state in SQLite under /config, and republishes changed files automatically. The first scan runs on startup once IPFS is ready. Upload throttling is disabled by default in this Unraid template; if you enable UPLOAD_BANDWIDTH_LIMIT, leave Extra Parameters set to --cap-add=NET_ADMIN.</Overview>
+  <Category>Network:Storage:Tools:Utilities:</Category>
+  <WebUI>http://[IP]:[PORT:8080]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/bstone108/IPFS-CID-Docker/main/unraid/ipfs-cid-docker.xml</TemplateURL>
+  <ExtraParams>--cap-add=NET_ADMIN</ExtraParams>
+  <Date>2026-03-27</Date>
+  <Changes>
+### 2026-03-27
+- Initial Unraid template.
+  </Changes>
+  <Config Name="Gateway Port" Target="8080" Default="8080" Mode="tcp" Description="IPFS gateway port used for /ipfs/&lt;cid&gt; access." Type="Port" Display="always" Required="false" Mask="false"/>
+  <Config Name="API Port" Target="5001" Default="5001" Mode="tcp" Description="IPFS API port." Type="Port" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Swarm TCP Port" Target="4001" Default="4001" Mode="tcp" Description="IPFS swarm TCP port." Type="Port" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Swarm UDP Port" Target="4001" Default="4001" Mode="udp" Description="IPFS swarm UDP port." Type="Port" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Config Storage" Target="/config" Default="/mnt/user/appdata/ipfs-cid-docker" Mode="rw" Description="Persistent IPFS repo, SQLite database, and exported manifest." Type="Path" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Scan Path 1" Target="/mnt/scan1" Default="" Mode="ro" Description="Optional host folder to scan. Add more host paths under /mnt/... if needed." Type="Path" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="Scan Path 2" Target="/mnt/scan2" Default="" Mode="ro" Description="Optional second scan path." Type="Path" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Scan Path 3" Target="/mnt/scan3" Default="" Mode="ro" Description="Optional third scan path." Type="Path" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="CONFIG_PATH" Target="CONFIG_PATH" Default="/config" Description="Root path for persistent state inside the container." Type="Variable" Display="advanced" Required="true" Mask="false"/>
+  <Config Name="SCAN_PATHS" Target="SCAN_PATHS" Default="/mnt" Description="Comma-separated scan roots under /mnt. Leave as /mnt for zero-config behavior." Type="Variable" Display="advanced" Required="true" Mask="false"/>
+  <Config Name="RESCAN_INTERVAL" Target="RESCAN_INTERVAL" Default="15m" Description="Delay between scans after the initial startup import, for example 30s, 10m, or 1h 30m." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="SCAN_PRIORITY" Target="SCAN_PRIORITY" Default="low" Description="high, normal, or low." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="UPLOAD_BANDWIDTH_LIMIT" Target="UPLOAD_BANDWIDTH_LIMIT" Default="off" Description="Optional outbound bandwidth cap such as 10mbit or 5MiB/s. Requires Extra Parameters to keep --cap-add=NET_ADMIN." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="IPFS_PROFILE" Target="IPFS_PROFILE" Default="server" Description="Comma-separated Kubo config profiles applied only when the repo is first initialized." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_PATH" Target="IPFS_PATH" Default="/config/ipfs" Description="IPFS repo path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="INDEX_DB_PATH" Target="INDEX_DB_PATH" Default="/config/index/index.db" Description="SQLite database path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="INDEX_EXPORT_PATH" Target="INDEX_EXPORT_PATH" Default="/config/index/current-index.json" Description="Exported active manifest path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="BANDWIDTH_INTERFACE" Target="BANDWIDTH_INTERFACE" Default="" Description="Optional override for the Linux interface used by tc if auto-detection picks the wrong one." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>
