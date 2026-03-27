@@ -139,25 +139,3 @@ docker build \
   -t ghcr.io/bstone108/ipfs-cid-docker:latest .
 ```
 
-## Publish From GitHub
-
-The repo includes a GitHub Actions workflow at [.github/workflows/publish-ghcr.yml](/Users/brandonstone/Documents/Source%20Code/IPFS%20Docker/.github/workflows/publish-ghcr.yml).
-
-It will build multi-arch images for `linux/amd64` and `linux/arm64` and publish them to:
-
-```text
-ghcr.io/bstone108/ipfs-cid-docker
-```
-
-The workflow runs on:
-
-- pushes to `main`
-- version tags like `v0.1.0`
-- manual runs from the Actions tab
-
-On the first publish, GitHub Container Registry creates the package as private by default. After the first successful workflow run, open the package page in GitHub and change its visibility to public if you want anonymous pulls.
-
-If you also want Docker Hub, the simplest path is to either:
-
-- point Docker Hub automated builds at this GitHub repo
-- or add a second login and push step to the workflow using Docker Hub secrets
