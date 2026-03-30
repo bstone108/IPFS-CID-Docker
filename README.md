@@ -63,6 +63,8 @@ Manual multiaddrs win over auto mode. For Pangolin or any other routed setup, th
 
 The manual override must point at a real externally reachable swarm transport. Advertising the gateway or API URL alone will not help peers dial the node.
 
+Please note, port 4001, or whatever you set it to, must be reachable. if you use a custom port please use appendannounce to tell the swarm what it is.  If it's not reachable, those attempting to access your media will encounter an unreliable experience as tunneling through firewalls isn't reliable.
+
 ## CID Compatibility
 
 Two tools can index the same bytes and still produce different CIDs if their IPFS add settings differ. This container now records the effective import profile in SQLite and will automatically reindex unchanged files if you change the profile later.
