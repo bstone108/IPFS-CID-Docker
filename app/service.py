@@ -1254,6 +1254,65 @@ def run_diagnose_cid_command(cid: str) -> int:
     return 0
 
 
+def list_recursive_pins(config: Config) -> list[str]:
+    result = run_ipfs(
+        ["pin", "ls", "--type=recursive", "-q"],
+        niceness=config.profile.niceness,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"ipfs pin ls --type=recursive -q failed: {stderr}")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def audit_live_files(config: Config) -> dict[str, object]:
+    roots = resolve_scan_roots(config.scan_paths_raw, config.mount_root)
+    recursive_pins = list_recursive_pins(config)
+    entries: list[dict[str, object]] = []
+    matched_cids: set[str] = set()
+    mount_root = config.mount_root.resolve()
+
+    for root in roots:
+        for path in iter_regular_files(root):
+            relative_path = str(path.relative_to(mount_root))
+            only_hash = recompute_only_hash(config, path)
+            cid = only_hash.get("recomputed_cid")
+            local_state = get_local_cid_state(config, cid) if isinstance(cid, str) else None
+            if isinstance(cid, str) and cid in recursive_pins:
+                matched_cids.add(cid)
+            entries.append(
+                {
+                    "path": str(path),
+                    "relative_path": relative_path,
+                    "root_path": str(root),
+                    "recomputed_only_hash": only_hash,
+                    "kubo_local_state": local_state,
+                    "recursive_pin_match": cid in recursive_pins if isinstance(cid, str) else False,
+                }
+            )
+
+    unmatched_recursive_pins = sorted(set(recursive_pins) - matched_cids)
+    return {
+        "generated_at": utcnow(),
+        "kubo_version": config.kubo_version,
+        "ipfs_add": config.ipfs_add_profile.as_manifest_object(),
+        "scan_paths": [str(root) for root in roots],
+        "kubo_recursive_pins": recursive_pins,
+        "entries": entries,
+        "unmatched_recursive_pins": unmatched_recursive_pins,
+    }
+
+
+def run_audit_live_files_command() -> int:
+    setup_logging()
+    config = load_config()
+    os.environ["IPFS_PATH"] = str(config.ipfs_path)
+    payload = audit_live_files(config)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def ensure_ipfs_repo(config: Config) -> None:
     config.ipfs_path.mkdir(parents=True, exist_ok=True)
     repo_config = config.ipfs_path / "config"
@@ -1631,4 +1690,6 @@ if __name__ == "__main__":
             print("usage: service.py diagnose-cid <cid>", file=sys.stderr)
             raise SystemExit(2)
         raise SystemExit(run_diagnose_cid_command(argv[1]))
+    if argv == ["audit-live-files"]:
+        raise SystemExit(run_audit_live_files_command())
     raise SystemExit(main())

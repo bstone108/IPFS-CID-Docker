@@ -168,6 +168,19 @@ The output includes:
 
 The scanner also now verifies that a freshly added CID is both local and pinned before writing it to SQLite. If Kubo returns a CID but does not actually retain it, the scan logs an error instead of silently recording bad state.
 
+To list Kubo's recursive pins and match them against the live files currently visible under `/mnt`, run:
+
+```bash
+docker exec -it IPFSCIDDocker python3 /app/service.py audit-live-files
+```
+
+That audit is Kubo-first rather than DB-first:
+
+- it starts from `ipfs pin ls --type=recursive -q`
+- it recomputes each visible file's CID with `ipfs add --only-hash`
+- it reports which live files match a current recursive pin
+- it reports any recursive pins that do not match a currently visible file under `/mnt`
+
 ## Compose
 
 A sample [`compose.yaml`](compose.yaml) is included. This is the same basic setup in copy-paste form:

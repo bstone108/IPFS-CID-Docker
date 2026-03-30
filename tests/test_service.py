@@ -501,5 +501,42 @@ class DiagnoseCidTests(unittest.TestCase):
                 "cid-present",
             )
 
+
+class AuditLiveFilesTests(unittest.TestCase):
+    def test_reports_kubo_recursive_pins_and_live_file_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mount_root = Path(tmpdir, "mnt")
+            mount_root.mkdir()
+            file_path = mount_root / "sample.bin"
+            file_path.write_bytes(b"hello world")
+
+            config = make_config(
+                mount_root=str(mount_root.resolve()),
+                scan_paths_raw=str(mount_root.resolve()),
+            )
+
+            def fake_run_ipfs(args, *, niceness, check=True):
+                if args == ["pin", "ls", "--type=recursive", "-q"]:
+                    return Mock(stdout="cid-live\ncid-orphan\n", stderr="", returncode=0)
+                if args[:2] == ["add", "-Q"] and "--only-hash" in args:
+                    return Mock(stdout="cid-live\n", stderr="", returncode=0)
+                if args[:4] == ["pin", "ls", "--type=all", "cid-live"]:
+                    return Mock(stdout="cid-live recursive\n", stderr="", returncode=0)
+                if args[:3] == ["block", "stat", "cid-live"]:
+                    return Mock(stdout="Key: cid-live\nSize: 11\n", stderr="", returncode=0)
+                raise AssertionError(f"Unexpected ipfs command: {args}")
+
+            with patch.object(service, "run_ipfs", side_effect=fake_run_ipfs):
+                payload = service.audit_live_files(config)
+
+            self.assertEqual(payload["kubo_recursive_pins"], ["cid-live", "cid-orphan"])
+            self.assertEqual(payload["unmatched_recursive_pins"], ["cid-orphan"])
+            self.assertEqual(len(payload["entries"]), 1)
+            self.assertEqual(
+                payload["entries"][0]["recomputed_only_hash"]["recomputed_cid"],
+                "cid-live",
+            )
+            self.assertTrue(payload["entries"][0]["recursive_pin_match"])
+
 if __name__ == "__main__":
     unittest.main()
