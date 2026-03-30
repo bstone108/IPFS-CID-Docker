@@ -49,6 +49,10 @@ spec:
               value: matrix-share-client
             - name: UPLOAD_BANDWIDTH_LIMIT
               value: 10mbit
+            # - name: IPFS_AUTO_ANNOUNCE
+            #   value: "true"
+            # - name: IPFS_APPEND_ANNOUNCE
+            #   value: /dns4/ipfs.example.com/tcp/443/tls/ws,/dns4/ipfs.example.com/udp/443/quic-v1/webtransport
             # - name: UPLOAD_BANDWIDTH_METHOD
             #   value: auto
             # - name: UPLOAD_BANDWIDTH_REQUIRED

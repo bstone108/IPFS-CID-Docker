@@ -8,13 +8,15 @@
   <Support>https://github.com/bstone108/IPFS-CID-Docker/issues</Support>
   <Project>https://github.com/bstone108/IPFS-CID-Docker</Project>
   <ReadMe>https://github.com/bstone108/IPFS-CID-Docker#readme</ReadMe>
-  <Overview>Lightweight IPFS sidecar that scans mounted files under /mnt, stores file-to-CID state in SQLite under /config, and republishes changed files automatically. The first scan runs on startup once IPFS is ready. The default IPFS add profile matches the companion Matrix media share client (CIDv1 with Kubo defaults). Upload throttling is disabled by default in this Unraid template; if you enable UPLOAD_BANDWIDTH_LIMIT, leave Extra Parameters set to --cap-add=NET_ADMIN. Auto mode will try tbf, htb, then netem rate shaping.</Overview>
+  <Overview>Lightweight IPFS sidecar that scans mounted files under /mnt, stores file-to-CID state in SQLite under /config, and republishes changed files automatically. The first scan runs on startup once IPFS is ready. The default IPFS add profile matches the companion Matrix media share client (CIDv1 with Kubo defaults). Upload throttling is disabled by default in this Unraid template; if you enable UPLOAD_BANDWIDTH_LIMIT, leave Extra Parameters set to --cap-add=NET_ADMIN. Auto mode will try tbf, htb, then netem rate shaping. Public swarm announce addresses can either be auto-resolved from the host's public IPv4 or manually overridden with exact multiaddrs for Pangolin or other custom routes.</Overview>
   <Category>Network:Storage:Tools:Utilities:</Category>
   <WebUI>http://[IP]:[PORT:8080]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/bstone108/IPFS-CID-Docker/main/unraid/ipfs-cid-docker.xml</TemplateURL>
   <ExtraParams>--cap-add=NET_ADMIN</ExtraParams>
-  <Date>2026-03-27</Date>
+  <Date>2026-03-30</Date>
   <Changes>
+### 2026-03-30
+- Added public swarm announce controls with auto-resolve and exact multiaddr override support.
 ### 2026-03-27
 - Initial Unraid template.
   </Changes>
@@ -40,6 +42,8 @@
   <Config Name="IPFS_ADD_HASH" Target="IPFS_ADD_HASH" Default="" Description="Optional override for the IPFS add hash function, for example sha2-256." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="IPFS_ADD_CHUNKER" Target="IPFS_ADD_CHUNKER" Default="" Description="Optional override for the IPFS add chunker, for example size-262144." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="IPFS_ADD_TRICKLE" Target="IPFS_ADD_TRICKLE" Default="" Description="Optional override for trickle DAG layout (true or false)." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_AUTO_ANNOUNCE" Target="IPFS_AUTO_ANNOUNCE" Default="false" Description="Set to true to resolve the host's public IPv4 on startup and append public swarm multiaddrs automatically." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="IPFS_APPEND_ANNOUNCE" Target="IPFS_APPEND_ANNOUNCE" Default="" Description="Optional exact multiaddrs to put into Addresses.AppendAnnounce. This wins over auto mode and is the best fit for Pangolin or other custom routes." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="IPFS_PATH" Target="IPFS_PATH" Default="/config/ipfs" Description="IPFS repo path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="INDEX_DB_PATH" Target="INDEX_DB_PATH" Default="/config/index/index.db" Description="SQLite database path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="INDEX_EXPORT_PATH" Target="INDEX_EXPORT_PATH" Default="/config/index/current-index.json" Description="Exported active manifest path inside the container." Type="Variable" Display="advanced" Required="false" Mask="false"/>

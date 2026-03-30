@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import math
 import os
@@ -63,6 +64,11 @@ IPFS_ADD_PROFILE_CHOICES = (
     "matrix-share-client",
     "cidv1-raw",
     "kubo-default",
+)
+PUBLIC_IPV4_RESOLVER_URLS = (
+    "https://api.ipify.org",
+    "https://checkip.amazonaws.com",
+    "https://ipv4.icanhazip.com",
 )
 
 BANDWIDTH_UNIT_MULTIPLIERS = {
@@ -235,6 +241,8 @@ class Config:
     ipfs_profiles: tuple[str, ...]
     kubo_version: str
     ipfs_add_profile: IpfsAddProfile
+    ipfs_auto_announce: bool
+    ipfs_append_announce: tuple[str, ...]
     upload_bandwidth_limit: BandwidthLimit | None
     upload_bandwidth_method: str
     upload_bandwidth_required: bool
@@ -509,6 +517,21 @@ def parse_optional_bool(value: str, *, name: str) -> bool | None:
     return parse_bool(value, name=name)
 
 
+def parse_multiaddr_list(value: str, *, name: str) -> tuple[str, ...]:
+    entries: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,\n]+", value):
+        text = part.strip()
+        if not text:
+            continue
+        if not text.startswith("/"):
+            raise ValueError(f"{name} entries must be full multiaddrs starting with '/'")
+        if text not in seen:
+            entries.append(text)
+            seen.add(text)
+    return tuple(entries)
+
+
 def parse_optional_cid_version(value: str) -> int | None:
     text = value.strip()
     if not text:
@@ -667,6 +690,14 @@ def load_config() -> Config:
             name="IPFS_ADD_TRICKLE",
         ),
     )
+    ipfs_auto_announce = parse_bool(
+        os.getenv("IPFS_AUTO_ANNOUNCE", "false"),
+        name="IPFS_AUTO_ANNOUNCE",
+    )
+    ipfs_append_announce = parse_multiaddr_list(
+        os.getenv("IPFS_APPEND_ANNOUNCE", ""),
+        name="IPFS_APPEND_ANNOUNCE",
+    )
     upload_bandwidth_limit = parse_bandwidth_limit(
         os.getenv("UPLOAD_BANDWIDTH_LIMIT", "")
     )
@@ -698,6 +729,8 @@ def load_config() -> Config:
         ipfs_profiles=ipfs_profiles,
         kubo_version=kubo_version,
         ipfs_add_profile=ipfs_add_profile,
+        ipfs_auto_announce=ipfs_auto_announce,
+        ipfs_append_announce=ipfs_append_announce,
         upload_bandwidth_limit=upload_bandwidth_limit,
         upload_bandwidth_method=upload_bandwidth_method,
         upload_bandwidth_required=upload_bandwidth_required,
@@ -1353,13 +1386,11 @@ def start_ipfs_daemon() -> subprocess.Popen[str]:
 
 
 def get_ipfs_api_http_url(ipfs_path: Path) -> str:
-    config_file = ipfs_path / "config"
     default_host = "127.0.0.1"
     default_port = "5001"
 
-    try:
-        payload = json.loads(config_file.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    payload = load_ipfs_repo_config(ipfs_path)
+    if not payload:
         return f"http://{default_host}:{default_port}/api/v0/version"
 
     api_addr = payload.get("Addresses", {}).get("API", "")
@@ -1378,6 +1409,172 @@ def get_ipfs_api_http_url(ipfs_path: Path) -> str:
         return f"http://[{host}]:{port}/api/v0/version"
 
     return f"http://{default_host}:{default_port}/api/v0/version"
+
+
+def load_ipfs_repo_config(ipfs_path: Path) -> dict[str, object]:
+    config_file = ipfs_path / "config"
+    try:
+        payload = json.loads(config_file.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def get_ipfs_address_list(ipfs_path: Path, key: str) -> tuple[str, ...]:
+    payload = load_ipfs_repo_config(ipfs_path)
+    addresses = payload.get("Addresses")
+    if not isinstance(addresses, dict):
+        return ()
+
+    value = addresses.get(key)
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
+
+
+def build_announce_prefix(host: str, *, ip_version: int) -> str | None:
+    try:
+        parsed = ipaddress.ip_address(host)
+    except ValueError:
+        return f"/dns{ip_version}/{host}"
+
+    if parsed.version != ip_version:
+        return None
+    return f"/ip{ip_version}/{parsed.compressed}"
+
+
+def rewrite_listener_as_public_multiaddr(listener: str, host: str) -> str | None:
+    replacements = (
+        ("/ip4/0.0.0.0", 4),
+        ("/ip6/::", 6),
+    )
+    for wildcard_prefix, ip_version in replacements:
+        if listener == wildcard_prefix or listener.startswith(f"{wildcard_prefix}/"):
+            announce_prefix = build_announce_prefix(host, ip_version=ip_version)
+            if announce_prefix is None:
+                return None
+            return f"{announce_prefix}{listener[len(wildcard_prefix):]}"
+    return None
+
+
+def build_append_announce_from_host(
+    host: str,
+    listener_addrs: Iterable[str],
+) -> tuple[str, ...]:
+    announce_addrs: list[str] = []
+    seen: set[str] = set()
+    for listener in listener_addrs:
+        rewritten = rewrite_listener_as_public_multiaddr(listener, host)
+        if rewritten and rewritten not in seen:
+            announce_addrs.append(rewritten)
+            seen.add(rewritten)
+    return tuple(announce_addrs)
+
+
+def resolve_public_ipv4() -> str:
+    errors: list[str] = []
+    for url in PUBLIC_IPV4_RESOLVER_URLS:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "ipfs-cid-docker/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                candidate = response.read().decode("utf-8", errors="replace").strip()
+            parsed = ipaddress.ip_address(candidate)
+            if parsed.version != 4:
+                raise ValueError(f"resolver returned non-IPv4 address {candidate!r}")
+            return parsed.compressed
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {exc}")
+    raise RuntimeError(
+        "Could not resolve a public IPv4 address from any configured resolver. "
+        + "; ".join(errors)
+    )
+
+
+def build_auto_append_announce(ipfs_path: Path) -> tuple[str, ...]:
+    listener_addrs = get_ipfs_address_list(ipfs_path, "Swarm")
+    if not listener_addrs:
+        raise RuntimeError("No swarm listener addresses were found in the IPFS repo config")
+
+    public_ipv4 = resolve_public_ipv4()
+    announce_addrs = build_append_announce_from_host(public_ipv4, listener_addrs)
+    if not announce_addrs:
+        raise RuntimeError(
+            "Resolved a public IPv4 address but could not derive any public multiaddrs "
+            "from the configured swarm listeners"
+        )
+    return announce_addrs
+
+
+def set_ipfs_json_config(key: str, value: object) -> None:
+    subprocess.run(
+        ["ipfs", "config", "--json", key, json.dumps(value)],
+        check=True,
+        env=os.environ.copy(),
+    )
+
+
+def configure_ipfs_announce_addresses(config: Config) -> None:
+    current_append_announce = get_ipfs_address_list(config.ipfs_path, "AppendAnnounce")
+
+    if config.ipfs_append_announce:
+        desired_append_announce = config.ipfs_append_announce
+        source = "manual override"
+    elif config.ipfs_auto_announce:
+        try:
+            desired_append_announce = build_auto_append_announce(config.ipfs_path)
+            source = "auto-resolved public address"
+        except Exception as exc:  # noqa: BLE001
+            if current_append_announce:
+                LOGGER.warning(
+                    "Could not auto-resolve public announce addresses (%s); keeping "
+                    "existing Addresses.AppendAnnounce=%s",
+                    exc,
+                    ", ".join(current_append_announce),
+                )
+                return
+            LOGGER.warning(
+                "Could not auto-resolve public announce addresses (%s); leaving "
+                "Addresses.AppendAnnounce empty so Kubo falls back to inferred swarm "
+                "addresses",
+                exc,
+            )
+            desired_append_announce = ()
+            source = "inferred swarm addresses"
+    else:
+        desired_append_announce = ()
+        source = "inferred swarm addresses"
+
+    if current_append_announce == desired_append_announce:
+        if desired_append_announce:
+            LOGGER.info(
+                "Using existing IPFS Addresses.AppendAnnounce from %s: %s",
+                source,
+                ", ".join(desired_append_announce),
+            )
+        else:
+            LOGGER.info(
+                "IPFS Addresses.AppendAnnounce is empty; Kubo will use inferred swarm addresses"
+            )
+        return
+
+    set_ipfs_json_config("Addresses.AppendAnnounce", list(desired_append_announce))
+    if desired_append_announce:
+        LOGGER.info(
+            "Configured IPFS Addresses.AppendAnnounce via %s: %s",
+            source,
+            ", ".join(desired_append_announce),
+        )
+    else:
+        LOGGER.info(
+            "Cleared IPFS Addresses.AppendAnnounce; Kubo will use inferred swarm addresses"
+        )
 
 
 def wait_for_ipfs(
@@ -1624,7 +1821,7 @@ def main() -> int:
     os.environ["IPFS_PATH"] = str(config.ipfs_path)
 
     LOGGER.info(
-        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s upload_method=%s required=%s ipfs_add_profile=%s kubo_version=%s add_args=%s",
+        "Starting autoscan service with roots=%s interval=%s priority=%s upload_limit=%s upload_method=%s required=%s ipfs_add_profile=%s kubo_version=%s auto_announce=%s append_announce=%s add_args=%s",
         config.scan_paths_raw,
         config.rescan_interval_text,
         config.scan_priority,
@@ -1633,12 +1830,15 @@ def main() -> int:
         config.upload_bandwidth_required,
         config.ipfs_add_profile.profile_name,
         config.kubo_version,
+        config.ipfs_auto_announce,
+        ",".join(config.ipfs_append_announce) if config.ipfs_append_announce else "off",
         " ".join(config.ipfs_add_profile.cli_args),
     )
 
     ensure_parent_dir(config.db_path)
     ensure_parent_dir(config.export_path)
     ensure_ipfs_repo(config)
+    configure_ipfs_announce_addresses(config)
     apply_upload_bandwidth_limit(config)
 
     scanner = Scanner(config)

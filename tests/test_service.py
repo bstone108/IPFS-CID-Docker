@@ -10,11 +10,14 @@ from app.service import (
     IpfsAddProfile,
     PriorityProfile,
     ScanSummary,
+    build_append_announce_from_host,
     build_ipfs_add_profile,
+    configure_ipfs_announce_addresses,
     initialize_schema,
     load_config,
     parse_bandwidth_limit,
     parse_interval,
+    parse_multiaddr_list,
     resolve_scan_roots,
     summarize_ipfs_result,
     upsert_successful_file,
@@ -34,6 +37,8 @@ def make_config(
     ipfs_path: str | None = None,
     kubo_version: str = "v0.40.1",
     ipfs_add_profile: IpfsAddProfile | None = None,
+    ipfs_auto_announce: bool = False,
+    ipfs_append_announce: tuple[str, ...] = (),
     upload_bandwidth_limit=None,
     upload_bandwidth_method: str = "auto",
     upload_bandwidth_required: bool = False,
@@ -71,6 +76,8 @@ def make_config(
         ipfs_profiles=("server",),
         kubo_version=kubo_version,
         ipfs_add_profile=ipfs_add_profile,
+        ipfs_auto_announce=ipfs_auto_announce,
+        ipfs_append_announce=ipfs_append_announce,
         upload_bandwidth_limit=upload_bandwidth_limit,
         upload_bandwidth_method=upload_bandwidth_method,
         upload_bandwidth_required=upload_bandwidth_required,
@@ -140,6 +147,24 @@ class ResolveScanRootsTests(unittest.TestCase):
                 resolve_scan_roots(str(outside), mount_root)
 
 
+class ParseMultiaddrListTests(unittest.TestCase):
+    def test_supports_comma_and_newline_separated_multiaddrs(self) -> None:
+        self.assertEqual(
+            parse_multiaddr_list(
+                "/ip4/203.0.113.10/tcp/4001,\n/dns4/ipfs.example.com/tcp/443/tls/ws",
+                name="IPFS_APPEND_ANNOUNCE",
+            ),
+            (
+                "/ip4/203.0.113.10/tcp/4001",
+                "/dns4/ipfs.example.com/tcp/443/tls/ws",
+            ),
+        )
+
+    def test_rejects_non_multiaddr_entries(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be full multiaddrs"):
+            parse_multiaddr_list("ipfs.example.com:4001", name="IPFS_APPEND_ANNOUNCE")
+
+
 class LoadConfigTests(unittest.TestCase):
     def test_config_path_changes_default_storage_locations(self) -> None:
         with patch.dict(
@@ -185,6 +210,26 @@ class LoadConfigTests(unittest.TestCase):
         self.assertEqual(config.upload_bandwidth_method, "netem")
         self.assertTrue(config.upload_bandwidth_required)
         self.assertEqual(config.bandwidth_interface, "eth9")
+
+    def test_loads_announce_settings(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "KUBO_VERSION": "v0.40.1",
+                "RESCAN_INTERVAL": "5m",
+                "SCAN_PRIORITY": "normal",
+                "IPFS_AUTO_ANNOUNCE": "true",
+                "IPFS_APPEND_ANNOUNCE": "/dns4/ipfs.example.com/tcp/443/tls/ws",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertTrue(config.ipfs_auto_announce)
+        self.assertEqual(
+            config.ipfs_append_announce,
+            ("/dns4/ipfs.example.com/tcp/443/tls/ws",),
+        )
 
     def test_loads_custom_ipfs_add_profile_overrides(self) -> None:
         with patch.dict(
@@ -313,6 +358,135 @@ class UploadBandwidthLimitTests(unittest.TestCase):
         self.assertFalse(applied)
         self.assertEqual(run_mock.call_count, 2)
         warning_mock.assert_called_once()
+
+
+class AnnounceAddressTests(unittest.TestCase):
+    def test_builds_append_announce_from_public_host(self) -> None:
+        listener_addrs = (
+            "/ip4/0.0.0.0/tcp/4001",
+            "/ip6/::/tcp/4001",
+            "/ip4/0.0.0.0/udp/4001/quic-v1",
+            "/ip4/0.0.0.0/udp/4001/quic-v1/webtransport",
+        )
+
+        self.assertEqual(
+            build_append_announce_from_host("203.0.113.10", listener_addrs),
+            (
+                "/ip4/203.0.113.10/tcp/4001",
+                "/ip4/203.0.113.10/udp/4001/quic-v1",
+                "/ip4/203.0.113.10/udp/4001/quic-v1/webtransport",
+            ),
+        )
+
+    def test_manual_append_announce_overrides_auto_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ipfs_path = Path(tmpdir)
+            ipfs_path.mkdir(exist_ok=True)
+            (ipfs_path / "config").write_text(
+                json.dumps(
+                    {
+                        "Addresses": {
+                            "AppendAnnounce": [],
+                            "Swarm": ["/ip4/0.0.0.0/tcp/4001"],
+                        }
+                    }
+                )
+            )
+            config = make_config(
+                ipfs_path=str(ipfs_path),
+                ipfs_auto_announce=True,
+                ipfs_append_announce=("/dns4/ipfs.example.com/tcp/443/tls/ws",),
+            )
+
+            with (
+                patch.object(service, "resolve_public_ipv4", side_effect=AssertionError("auto resolution should not run")),
+                patch.object(service.subprocess, "run", return_value=Mock(returncode=0)) as run_mock,
+            ):
+                configure_ipfs_announce_addresses(config)
+
+        run_mock.assert_called_once()
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            [
+                "ipfs",
+                "config",
+                "--json",
+                "Addresses.AppendAnnounce",
+                '["/dns4/ipfs.example.com/tcp/443/tls/ws"]',
+            ],
+        )
+
+    def test_auto_append_announce_uses_public_ip_and_swarm_listeners(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ipfs_path = Path(tmpdir)
+            ipfs_path.mkdir(exist_ok=True)
+            (ipfs_path / "config").write_text(
+                json.dumps(
+                    {
+                        "Addresses": {
+                            "AppendAnnounce": [],
+                            "Swarm": [
+                                "/ip4/0.0.0.0/tcp/4001",
+                                "/ip4/0.0.0.0/udp/4001/quic-v1",
+                                "/ip6/::/tcp/4001",
+                            ],
+                        }
+                    }
+                )
+            )
+            config = make_config(
+                ipfs_path=str(ipfs_path),
+                ipfs_auto_announce=True,
+            )
+
+            with (
+                patch.object(service, "resolve_public_ipv4", return_value="203.0.113.10"),
+                patch.object(service.subprocess, "run", return_value=Mock(returncode=0)) as run_mock,
+            ):
+                configure_ipfs_announce_addresses(config)
+
+        run_mock.assert_called_once()
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            [
+                "ipfs",
+                "config",
+                "--json",
+                "Addresses.AppendAnnounce",
+                '["/ip4/203.0.113.10/tcp/4001", "/ip4/203.0.113.10/udp/4001/quic-v1"]',
+            ],
+        )
+
+    def test_disabling_feature_clears_stale_append_announce(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ipfs_path = Path(tmpdir)
+            ipfs_path.mkdir(exist_ok=True)
+            (ipfs_path / "config").write_text(
+                json.dumps(
+                    {
+                        "Addresses": {
+                            "AppendAnnounce": ["/ip4/203.0.113.10/tcp/4001"],
+                            "Swarm": ["/ip4/0.0.0.0/tcp/4001"],
+                        }
+                    }
+                )
+            )
+            config = make_config(ipfs_path=str(ipfs_path))
+
+            with patch.object(service.subprocess, "run", return_value=Mock(returncode=0)) as run_mock:
+                configure_ipfs_announce_addresses(config)
+
+        run_mock.assert_called_once()
+        self.assertEqual(
+            run_mock.call_args.args[0],
+            [
+                "ipfs",
+                "config",
+                "--json",
+                "Addresses.AppendAnnounce",
+                "[]",
+            ],
+        )
 
 
 class ScannerImportProfileTests(unittest.TestCase):

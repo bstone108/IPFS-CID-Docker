@@ -42,10 +42,26 @@ The first scan runs immediately on startup once the IPFS daemon is ready. `RESCA
 | `IPFS_ADD_HASH` | unset | Optional override for the IPFS add hash function, for example `sha2-256`. |
 | `IPFS_ADD_CHUNKER` | unset | Optional override for the IPFS add chunker, for example `size-262144`. |
 | `IPFS_ADD_TRICKLE` | unset | Optional override for trickle DAG layout. Use `true` or `false`. |
+| `IPFS_AUTO_ANNOUNCE` | `false` | If `true`, the container resolves its public IPv4 on startup and populates `Addresses.AppendAnnounce` from the current swarm listeners. |
+| `IPFS_APPEND_ANNOUNCE` | unset | Optional exact swarm multiaddrs to put into `Addresses.AppendAnnounce`, separated by commas or newlines. This wins over `IPFS_AUTO_ANNOUNCE` and is the right choice for Pangolin or other custom external routes. |
 | `UPLOAD_BANDWIDTH_LIMIT` | disabled | Optional container-wide outbound bandwidth cap such as `10mbit`, `100Mbps`, or `5MiB/s`. This throttles uploads and any other egress traffic from the container when the host honors `tc` and `NET_ADMIN`. |
 | `UPLOAD_BANDWIDTH_METHOD` | `auto` | `auto`, `tbf`, `htb`, or `netem`. `auto` tries multiple Linux traffic-control methods for better host compatibility. |
 | `UPLOAD_BANDWIDTH_REQUIRED` | `false` | If `true`, startup fails unless a bandwidth limit can actually be applied. |
 | `BANDWIDTH_INTERFACE` | auto-detect | Optional override for the Linux network interface that `tc` should shape if auto-detection does not pick the right one. |
+
+## Public Address Announce
+
+If the node is pinned and providing content but remote peers still get `no addresses`, the issue is usually swarm address announcement rather than pinning.
+
+This container now manages `Addresses.AppendAnnounce` on every startup:
+
+- leave both `IPFS_AUTO_ANNOUNCE` and `IPFS_APPEND_ANNOUNCE` unset to let Kubo use only its inferred addresses
+- set `IPFS_AUTO_ANNOUNCE=true` to resolve a public IPv4 and append direct public swarm multiaddrs from the current `Addresses.Swarm` listeners
+- set `IPFS_APPEND_ANNOUNCE` to one or more exact multiaddrs if your public route is custom, proxied, or hostname-based
+
+Manual multiaddrs win over auto mode. For Pangolin or any other routed setup, the manual override is usually the better fit because you can advertise the exact externally reachable swarm path instead of assuming the container's direct IP and port mapping.
+
+The manual override must point at a real externally reachable swarm transport. Advertising the gateway or API URL alone will not help peers dial the node.
 
 ## CID Compatibility
 
@@ -199,6 +215,8 @@ services:
       SCAN_PRIORITY: low
       IPFS_ADD_PROFILE: matrix-share-client
       UPLOAD_BANDWIDTH_LIMIT: 10mbit
+      # IPFS_AUTO_ANNOUNCE: "true"
+      # IPFS_APPEND_ANNOUNCE: /dns4/ipfs.example.com/tcp/443/tls/ws,/dns4/ipfs.example.com/udp/443/quic-v1/webtransport
       # UPLOAD_BANDWIDTH_METHOD: auto
       # UPLOAD_BANDWIDTH_REQUIRED: "false"
       # IPFS_PATH: /config/ipfs
