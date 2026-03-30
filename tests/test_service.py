@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -15,6 +16,7 @@ from app.service import (
     parse_bandwidth_limit,
     parse_interval,
     resolve_scan_roots,
+    summarize_ipfs_result,
     upsert_successful_file,
 )
 
@@ -365,6 +367,10 @@ class ScannerImportProfileTests(unittest.TestCase):
                 commands.append(list(args))
                 if args[0] == "add":
                     return Mock(stdout="cid-new\n", returncode=0, stderr="")
+                if args[:4] == ["pin", "ls", "--type=all", "cid-new"]:
+                    return Mock(stdout="cid-new recursive\n", returncode=0, stderr="")
+                if args[:3] == ["block", "stat", "cid-new"]:
+                    return Mock(stdout="Key: cid-new\nSize: 11\n", returncode=0, stderr="")
                 if args[:2] == ["pin", "rm"]:
                     return Mock(stdout="", returncode=0, stderr="")
                 raise AssertionError(f"Unexpected ipfs command: {args}")
@@ -396,6 +402,104 @@ class ScannerImportProfileTests(unittest.TestCase):
 
             self.assertEqual(row["cid"], "cid-new")
             self.assertEqual(row["import_profile"], current_profile.signature)
+
+    def test_rejects_cid_when_kubo_does_not_keep_it_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mount_root = Path(tmpdir, "mnt")
+            mount_root.mkdir()
+            file_path = mount_root / "sample.bin"
+            file_path.write_bytes(b"hello world")
+
+            config = make_config(
+                mount_root=str(mount_root.resolve()),
+                scan_paths_raw=str(mount_root.resolve()),
+            )
+            scanner = service.Scanner(config)
+
+            def fake_run_ipfs(args, *, niceness, check=True):
+                if args[:1] == ["add"]:
+                    return Mock(stdout="cid-missing\n", stderr="", returncode=0)
+                if args[:4] == ["pin", "ls", "--type=all", "cid-missing"]:
+                    return Mock(stdout="", stderr="not pinned or pinned indirectly", returncode=1)
+                if args[:3] == ["block", "stat", "cid-missing"]:
+                    return Mock(stdout="cid-missing 123\n", stderr="", returncode=0)
+                raise AssertionError(f"Unexpected ipfs command: {args}")
+
+            with patch.object(service, "run_ipfs", side_effect=fake_run_ipfs):
+                with self.assertRaisesRegex(RuntimeError, "did not retain CID cid-missing"):
+                    scanner.add_file_to_ipfs(file_path)
+
+
+class DiagnoseCidTests(unittest.TestCase):
+    def test_reports_database_manifest_and_local_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mount_root = Path(tmpdir, "mnt")
+            config_root = Path(tmpdir, "config")
+            file_path = mount_root / "sample.bin"
+            mount_root.mkdir()
+            file_path.write_bytes(b"hello world")
+
+            profile = build_ipfs_add_profile(
+                profile_name="matrix-share-client",
+                kubo_version="v0.40.1",
+                cid_version_override=None,
+                raw_leaves_override=None,
+                hash_function_override=None,
+                chunker_override=None,
+                trickle_override=None,
+            )
+            config = make_config(
+                config_path=str(config_root),
+                mount_root=str(mount_root.resolve()),
+                scan_paths_raw=str(mount_root.resolve()),
+                db_path=str(config_root / "index" / "index.db"),
+                export_path=str(config_root / "index" / "current-index.json"),
+                ipfs_path=str(config_root / "ipfs"),
+                ipfs_add_profile=profile,
+            )
+            config.db_path.parent.mkdir(parents=True, exist_ok=True)
+            config.export_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with service.sqlite3.connect(config.db_path) as conn:
+                conn.row_factory = service.sqlite3.Row
+                initialize_schema(conn)
+                upsert_successful_file(
+                    conn=conn,
+                    path=str(file_path.resolve()),
+                    relative_path=str(file_path.name),
+                    root_path=str(mount_root.resolve()),
+                    cid="cid-present",
+                    import_profile=profile.signature,
+                    stat_result=file_path.stat(),
+                )
+                service.export_active_manifest(
+                    conn=conn,
+                    export_path=config.export_path,
+                    add_profile=profile,
+                    scan_paths=[str(mount_root.resolve())],
+                )
+                conn.commit()
+
+            def fake_run_ipfs(args, *, niceness, check=True):
+                if args[:4] == ["pin", "ls", "--type=all", "cid-present"]:
+                    return Mock(stdout="cid-present recursive\n", stderr="", returncode=0)
+                if args[:3] == ["block", "stat", "cid-present"]:
+                    return Mock(stdout="Key: cid-present\nSize: 11\n", stderr="", returncode=0)
+                if args[:2] == ["add", "-Q"] and "--only-hash" in args:
+                    return Mock(stdout="cid-present\n", stderr="", returncode=0)
+                raise AssertionError(f"Unexpected ipfs command: {args}")
+
+            with patch.object(service, "run_ipfs", side_effect=fake_run_ipfs):
+                payload = service.diagnose_cid(config, "cid-present")
+
+            self.assertEqual(payload["cid"], "cid-present")
+            self.assertEqual(len(payload["database_matches"]), 1)
+            self.assertEqual(len(payload["manifest_matches"]), 1)
+            self.assertTrue(payload["local_state"]["pin_ls_all"]["ok"])
+            self.assertEqual(
+                payload["recomputed_only_hash"][0]["recomputed_cid"],
+                "cid-present",
+            )
 
 if __name__ == "__main__":
     unittest.main()

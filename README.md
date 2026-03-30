@@ -150,6 +150,24 @@ If the gateway port is published, individual files are available at:
 http://<host>:8080/ipfs/<file_cid>
 ```
 
+## Diagnostics
+
+To inspect what the service database says about a CID and compare that against Kubo's actual local pin/block state, run:
+
+```bash
+docker exec -it IPFSCIDDocker python3 /app/service.py diagnose-cid <cid>
+```
+
+The output includes:
+
+- the CID's current local `pin ls --type=all` result
+- the CID's local `block stat` result
+- matching rows from `/config/index/index.db`
+- matching rows from `/config/index/current-index.json`
+- an `--only-hash` recomputation for any matching file paths still visible inside the container
+
+The scanner also now verifies that a freshly added CID is both local and pinned before writing it to SQLite. If Kubo returns a CID but does not actually retain it, the scan logs an error instead of silently recording bad state.
+
 ## Compose
 
 A sample [`compose.yaml`](compose.yaml) is included. This is the same basic setup in copy-paste form:

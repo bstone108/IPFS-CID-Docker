@@ -156,8 +156,8 @@ class IpfsAddProfile:
     kubo_version: str
 
     @property
-    def cli_args(self) -> tuple[str, ...]:
-        args = ["-Q", "--pin=true", "--wrap-with-directory=false"]
+    def add_flag_args(self) -> tuple[str, ...]:
+        args = ["--wrap-with-directory=false"]
         if self.cid_version is not None:
             args.append(f"--cid-version={self.cid_version}")
         if self.raw_leaves is not None:
@@ -169,6 +169,27 @@ class IpfsAddProfile:
         if self.trickle is not None:
             args.append(f"--trickle={'true' if self.trickle else 'false'}")
         return tuple(args)
+
+    def add_args(
+        self,
+        *,
+        only_hash: bool = False,
+        pin: bool = True,
+        quiet: bool = True,
+    ) -> tuple[str, ...]:
+        args: list[str] = []
+        if quiet:
+            args.append("-Q")
+        if only_hash:
+            args.append("--only-hash")
+        elif pin:
+            args.append("--pin=true")
+        args.extend(self.add_flag_args)
+        return tuple(args)
+
+    @property
+    def cli_args(self) -> tuple[str, ...]:
+        return self.add_args()
 
     @property
     def signature(self) -> str:
@@ -391,7 +412,7 @@ class Scanner:
         result = run_ipfs(
             [
                 "add",
-                *self.config.ipfs_add_profile.cli_args,
+                *self.config.ipfs_add_profile.add_args(),
                 str(path),
             ],
             niceness=self.config.profile.niceness,
@@ -399,6 +420,11 @@ class Scanner:
         cid = result.stdout.strip()
         if not cid:
             raise RuntimeError(f"ipfs add returned no CID for {path}")
+        verify_local_cid_state(
+            config=self.config,
+            cid=cid,
+            context=f"after indexing {path}",
+        )
         return cid
 
     def maybe_unpin(
@@ -1096,6 +1122,138 @@ def run_ipfs(
     return result
 
 
+def summarize_ipfs_result(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    return {
+        "ok": result.returncode == 0,
+        "returncode": result.returncode,
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+
+def get_local_cid_state(config: Config, cid: str) -> dict[str, object]:
+    pin_result = run_ipfs(
+        ["pin", "ls", "--type=all", cid],
+        niceness=config.profile.niceness,
+        check=False,
+    )
+    block_result = run_ipfs(
+        ["block", "stat", cid],
+        niceness=config.profile.niceness,
+        check=False,
+    )
+    return {
+        "cid": cid,
+        "pin_ls_all": summarize_ipfs_result(pin_result),
+        "block_stat": summarize_ipfs_result(block_result),
+    }
+
+
+def verify_local_cid_state(
+    *,
+    config: Config,
+    cid: str,
+    context: str,
+) -> None:
+    state = get_local_cid_state(config, cid)
+    pin_ok = bool(state["pin_ls_all"]["ok"])
+    block_ok = bool(state["block_stat"]["ok"])
+    if pin_ok and block_ok:
+        return
+
+    raise RuntimeError(
+        f"Kubo did not retain CID {cid} {context}. "
+        f"pin_ls_all={json.dumps(state['pin_ls_all'], sort_keys=True)} "
+        f"block_stat={json.dumps(state['block_stat'], sort_keys=True)}"
+    )
+
+
+def load_manifest_matches(export_path: Path, cid: str) -> list[dict[str, object]]:
+    try:
+        payload = json.loads(export_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+    rows = payload.get("files", [])
+    return [row for row in rows if row.get("cid") == cid]
+
+
+def load_database_matches(db_path: Path, cid: str) -> list[dict[str, object]]:
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            initialize_schema(conn)
+            rows = conn.execute(
+                """
+                SELECT path, relative_path, root_path, cid, import_profile, active,
+                       last_error, last_indexed_at, removed_at
+                FROM files
+                WHERE cid = ?
+                ORDER BY path
+                """,
+                (cid,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    return [dict(row) for row in rows]
+
+
+def recompute_only_hash(
+    config: Config,
+    path: Path,
+) -> dict[str, object]:
+    if not path.exists():
+        return {
+            "path": str(path),
+            "exists": False,
+        }
+
+    result = run_ipfs(
+        [
+            "add",
+            *config.ipfs_add_profile.add_args(only_hash=True),
+            str(path),
+        ],
+        niceness=config.profile.niceness,
+        check=False,
+    )
+    recomputed_cid = result.stdout.strip() if result.returncode == 0 else None
+    return {
+        "path": str(path),
+        "exists": True,
+        "result": summarize_ipfs_result(result),
+        "recomputed_cid": recomputed_cid,
+    }
+
+
+def diagnose_cid(config: Config, cid: str) -> dict[str, object]:
+    db_rows = load_database_matches(config.db_path, cid)
+    manifest_rows = load_manifest_matches(config.export_path, cid)
+    recomputed_rows = [
+        recompute_only_hash(config, Path(row["path"]))
+        for row in db_rows
+    ]
+    return {
+        "cid": cid,
+        "kubo_version": config.kubo_version,
+        "ipfs_add": config.ipfs_add_profile.as_manifest_object(),
+        "local_state": get_local_cid_state(config, cid),
+        "database_matches": db_rows,
+        "manifest_matches": manifest_rows,
+        "recomputed_only_hash": recomputed_rows,
+    }
+
+
+def run_diagnose_cid_command(cid: str) -> int:
+    setup_logging()
+    config = load_config()
+    os.environ["IPFS_PATH"] = str(config.ipfs_path)
+    payload = diagnose_cid(config, cid)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def ensure_ipfs_repo(config: Config) -> None:
     config.ipfs_path.mkdir(parents=True, exist_ok=True)
     repo_config = config.ipfs_path / "config"
@@ -1467,4 +1625,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    argv = sys.argv[1:]
+    if argv[:1] == ["diagnose-cid"]:
+        if len(argv) != 2:
+            print("usage: service.py diagnose-cid <cid>", file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(run_diagnose_cid_command(argv[1]))
     raise SystemExit(main())
